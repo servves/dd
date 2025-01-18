@@ -613,63 +613,34 @@ class PostSchedulerUI(QMainWindow):
 
 
     def upload_instagram_post(self, file_path, caption, is_reels=False, is_story=False):
+        if not self.initialize_instagram_client():
+            return False, "Instagram oturumu başlatılamadı"
+    
         try:
-            if not self.instagram_client:
-                self.instagram_client = Client()
-                try:
-                    self.instagram_client.login(
-                        self.insta_username.text(),
-                        self.insta_password.text()
-                    )
-                except Exception as login_error:
-                    raise Exception(f"Instagram login failed: {str(login_error)}")
-
             print(f"Instagram'a yükleniyor: {os.path.basename(file_path)}")
-
-            # Create a copy of the file in a temporary directory
+    
             temp_dir = os.path.join(os.path.dirname(file_path), 'temp_uploads')
             os.makedirs(temp_dir, exist_ok=True)
             temp_file = os.path.join(temp_dir, os.path.basename(file_path))
-
+    
             try:
-                import shutil
                 shutil.copy2(file_path, temp_file)
-
+    
                 if is_story:
-                    # Handle story upload
-                    if temp_file.lower().endswith('.mp4'):
-                        media = self.instagram_client.video_story_upload(temp_file)
-                    else:
-                        media = self.instagram_client.photo_story_upload(temp_file)
+                    media = self.instagram_client.video_story_upload(temp_file) if temp_file.lower().endswith('.mp4') else self.instagram_client.photo_story_upload(temp_file)
                 elif is_reels:
                     if not temp_file.lower().endswith('.mp4'):
                         raise Exception("Reels için sadece MP4 formatı desteklenir!")
-
-                    media = self.instagram_client.clip_upload(
-                        path=temp_file,
-                        caption=caption
-                    )
+                    media = self.instagram_client.clip_upload(path=temp_file, caption=caption)
                 else:
-                    if temp_file.lower().endswith('.mp4'):
-                        media = self.instagram_client.video_upload(
-                            path=temp_file,
-                            caption=caption
-                        )
-                    else:
-                        media = self.instagram_client.photo_upload(
-                            path=temp_file,
-                            caption=caption
-                        )
-
+                    media = self.instagram_client.video_upload(path=temp_file, caption=caption) if temp_file.lower().endswith('.mp4') else self.instagram_client.photo_upload(path=temp_file, caption=caption)
+    
                 print(f"Instagram'a yükleme başarılı: {os.path.basename(file_path)}")
                 return True, media.pk
-
+    
             finally:
-                # Ensure the file is closed before attempting to delete
                 if 'media' in locals():
-                    del media  # Delete the media object to release any file handles
-
-                # Clean up temporary files
+                    del media
                 try:
                     if os.path.exists(temp_file):
                         os.remove(temp_file)
@@ -677,11 +648,34 @@ class PostSchedulerUI(QMainWindow):
                         os.rmdir(temp_dir)
                 except Exception as cleanup_error:
                     print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
-
+    
         except Exception as e:
             print(f"Instagram yükleme hatası: {str(e)}")
             return False, str(e)
+    def initialize_instagram_client(self):
+        try:
+            if not self.instagram_client:
+                self.instagram_client = Client()
+                session_file = f"{self.insta_username.text()}_session.json"
 
+                if not self.insta_username.text() or not self.insta_password.text():
+                    raise Exception("Both username and password must be provided.")
+
+                if os.path.exists(session_file):
+                    self.instagram_client.load_settings(session_file)
+                    try:
+                        self.instagram_client.get_timeline_feed()
+                    except Exception:
+                        self.instagram_client.login(self.insta_username.text(), self.insta_password.text())
+                        self.instagram_client.dump_settings(session_file)
+                else:
+                    self.instagram_client.login(self.insta_username.text(), self.insta_password.text())
+                    self.instagram_client.dump_settings(session_file)
+
+            return True
+        except Exception as e:
+            print(f"Instagram oturumu başlatılamadı: {str(e)}")
+            return False
 # Example check_scheduled_posts method call to ensure correct parameters
     def check_scheduled_posts(self):
         try:
