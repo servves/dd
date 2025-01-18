@@ -19,9 +19,12 @@ import shutil
 class PostSchedulerUI(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.instagram_credentials = None
+        self.instagram_client = None
+        self.last_instagram_login = None
         self.setWindowTitle("Sosyal Medya Gönderi Planlayıcı")
         self.setGeometry(100, 100, 1200, 800)
-        
+       
         # Ana widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -391,8 +394,8 @@ class PostSchedulerUI(QMainWindow):
         self.instagram_radio.setChecked(False)
         self.instagram_reels_radio.setChecked(False)
         self.instagram_story_radio.setChecked(False)
-        self.insta_username.clear()
-        self.insta_password.clear()
+       # self.insta_username.clear()
+       # self.insta_password.clear()
         self.start_date.setDateTime(QDateTime.currentDateTime())
         self.start_time.setTime(QTime.currentTime())
         self.interval_hours.setValue(0)
@@ -613,34 +616,70 @@ class PostSchedulerUI(QMainWindow):
 
 
     def upload_instagram_post(self, file_path, caption, is_reels=False, is_story=False):
-        if not self.initialize_instagram_client():
-            return False, "Instagram oturumu başlatılamadı"
-    
         try:
+            # Instagram client'ı kontrol et ve gerekirse yeniden oluştur
+            if not self.instagram_client or not self.last_instagram_login:
+                self.instagram_client = Client()
+                try:
+                    self.instagram_client.login(
+                        self.insta_username.text(),
+                        self.insta_password.text()
+                    )
+                    # Başarılı girişi kaydet
+                    self.last_instagram_login = {
+                        'username': self.insta_username.text(),
+                        'password': self.insta_password.text()
+                    }
+                except Exception as login_error:
+                    raise Exception(f"Instagram login failed: {str(login_error)}")
+
             print(f"Instagram'a yükleniyor: {os.path.basename(file_path)}")
-    
+
+            # Geçici dizin oluştur
             temp_dir = os.path.join(os.path.dirname(file_path), 'temp_uploads')
             os.makedirs(temp_dir, exist_ok=True)
             temp_file = os.path.join(temp_dir, os.path.basename(file_path))
-    
+
             try:
                 shutil.copy2(file_path, temp_file)
-    
+
                 if is_story:
-                    media = self.instagram_client.video_story_upload(temp_file) if temp_file.lower().endswith('.mp4') else self.instagram_client.photo_story_upload(temp_file)
+                    if temp_file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        # Story için fotoğraf yükleme
+                        media = self.instagram_client.photo_upload_to_story(
+                            temp_file,
+                        )
+                    else:
+                        # Story için video yükleme
+                        media = self.instagram_client.video_upload_to_story(
+                            temp_file,
+                        )
                 elif is_reels:
                     if not temp_file.lower().endswith('.mp4'):
                         raise Exception("Reels için sadece MP4 formatı desteklenir!")
-                    media = self.instagram_client.clip_upload(path=temp_file, caption=caption)
+
+                    media = self.instagram_client.clip_upload(
+                        path=temp_file,
+                        caption=caption
+                    )
                 else:
-                    media = self.instagram_client.video_upload(path=temp_file, caption=caption) if temp_file.lower().endswith('.mp4') else self.instagram_client.photo_upload(path=temp_file, caption=caption)
-    
+                    # Normal post yükleme
+                    if temp_file.lower().endswith('.mp4'):
+                        media = self.instagram_client.video_upload(
+                            path=temp_file,
+                            caption=caption
+                        )
+                    else:
+                        media = self.instagram_client.photo_upload(
+                            path=temp_file,
+                            caption=caption
+                        )
+
                 print(f"Instagram'a yükleme başarılı: {os.path.basename(file_path)}")
                 return True, media.pk
-    
+
             finally:
-                if 'media' in locals():
-                    del media
+                # Geçici dosyaları temizle
                 try:
                     if os.path.exists(temp_file):
                         os.remove(temp_file)
@@ -648,9 +687,13 @@ class PostSchedulerUI(QMainWindow):
                         os.rmdir(temp_dir)
                 except Exception as cleanup_error:
                     print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
-    
+
         except Exception as e:
             print(f"Instagram yükleme hatası: {str(e)}")
+            # Oturum hatası durumunda client'ı sıfırla
+            if "login" in str(e).lower() or "session" in str(e).lower():
+                self.instagram_client = None
+                self.last_instagram_login = None
             return False, str(e)
     def initialize_instagram_client(self):
         try:
