@@ -353,28 +353,43 @@ class PostSchedulerUI(QMainWindow):
             QMessageBox.critical(self, "Hata", 
                                  "Veritabanı güncellenemedi!\nProgram kapatılacak.")
             sys.exit(1)
-    def save_instagram_credentials(self, username, password):
+    def save_instagram_credentials(self):
         try:
             conn = sqlite3.connect('scheduler.db')
             c = conn.cursor()
-
-            # Mevcut kimlik bilgilerini güncelle veya ekle
-            c.execute('''
-                INSERT INTO scheduled_posts (insta_username, insta_password)
-                VALUES (?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    insta_username=excluded.insta_username,
-                    insta_password=excluded.insta_password
-            ''', (username, password))
-
+            c.execute('''CREATE TABLE IF NOT EXISTS instagram_credentials
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          username TEXT NOT NULL,
+                          password TEXT NOT NULL)''')
+            c.execute('DELETE FROM instagram_credentials')
+            c.execute('INSERT INTO instagram_credentials (username, password) VALUES (?, ?)', 
+                      (self.insta_username.text(), self.insta_password.text()))
             conn.commit()
             conn.close()
-            print("Instagram kimlik bilgileri başarıyla kaydedildi!")
+            print("Instagram kimlik bilgileri kaydedildi!")
         except Exception as e:
-            print(f"Kimlik bilgileri kaydetme hatası: {str(e)}")
+            print(f"Instagram kimlik bilgileri kaydedilirken hata oluştu: {str(e)}")
             QMessageBox.warning(self, "Hata", "Instagram kimlik bilgileri kaydedilirken bir hata oluştu!")
 
-
+    def load_instagram_credentials(self):
+        try:
+            conn = sqlite3.connect('scheduler.db')
+            c = conn.cursor()
+            c.execute('''CREATE TABLE IF NOT EXISTS instagram_credentials
+                         (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          username TEXT NOT NULL,
+                          password TEXT NOT NULL)''')
+            credentials = c.execute('SELECT username, password FROM instagram_credentials').fetchone()
+            conn.close()
+            if credentials:
+                return credentials[0], credentials[1]
+            else:
+                print("Instagram kimlik bilgileri bulunamadı.")
+                return None, None
+        except Exception as e:
+            print(f"Instagram kimlik bilgileri yüklenirken hata oluştu: {str(e)}")
+            QMessageBox.warning(self, "Hata", "Instagram kimlik bilgileri yüklenirken bir hata oluştu!")
+            return None, None
     def get_instagram_credentials(self):
         try:
             conn = sqlite3.connect('scheduler.db')
@@ -464,92 +479,64 @@ class PostSchedulerUI(QMainWindow):
         )
 
     def schedule_posts(self):
-        """
-        Seçili dosyaları planlama
-        """
         if not self.validate_inputs():
             return
-    
+
         try:
-            # Başlangıç zamanını al
+            # Instagram kimlik bilgilerini kaydet
+            if self.instagram_radio.isChecked() or self.instagram_reels_radio.isChecked() or self.instagram_story_radio.isChecked():
+                self.save_instagram_credentials()
+
             start_date = self.start_date.date().toPyDate()
             start_time = self.start_time.time().toPyTime()
-            start_datetime = datetime.combine(start_date, start_time)
-    
-            # Gönderi aralığını hesapla
+            start_datetime = datetime(
+                start_date.year,
+                start_date.month,
+                start_date.day,
+                start_time.hour,
+                start_time.minute,
+                start_time.second
+            )
+
             interval = timedelta(
                 hours=self.interval_hours.value(),
                 minutes=self.interval_minutes.value()
             )
-    
-            # Progress bar'ı ayarla
-            self.progress_bar.setVisible(True)
-            self.progress_bar.setMaximum(self.files_list.count())
-            self.progress_bar.setValue(0)
-    
-            successful_posts = 0
-    
-            # Her dosya için planlama yap
+
             for i in range(self.files_list.count()):
-                try:
-                    scheduled_time = start_datetime + (interval * i)
-                    file_path = self.files_list.item(i).text()
-    
-                    # Başlık ve açıklamayı hazırla
-                    title = self.title_template.text().replace("{n}", str(i+1))
-                    description = self.description_template.toPlainText().replace("{n}", str(i+1))
-    
-                    # Platform bilgisini al
-                    platform = "YouTube" if self.youtube_radio.isChecked() else \
-                              "Instagram Reels" if self.instagram_reels_radio.isChecked() else \
-                              "Instagram Story" if self.instagram_story_radio.isChecked() else \
-                              "Instagram"
-    
-                    # YouTube için ek ayarları al
-                    privacy_status = self.privacy_status.currentText() if platform == "YouTube" else "private"
-                    made_for_kids = self.made_for_kids.currentText() if platform == "YouTube" else "Hayır"
-                    category = self.category.currentText() if platform == "YouTube" else ""
-                    tags = self.tags.text() if platform == "YouTube" else ""
-    
-                    # Instagram kullanıcı adı ve şifresini al
-                    insta_username = self.insta_username.text() if platform.startswith("Instagram") else ""
-                    insta_password = self.insta_password.text() if platform.startswith("Instagram") else ""
-    
-                    # Gönderiyi kaydet
-                    success, post_id = self.save_post_to_db(
-                        platform, file_path, scheduled_time, title, description,
-                        privacy_status, made_for_kids, category, tags, insta_username, insta_password
-                    )
-    
-                    if success:
-                        successful_posts += 1
-                        print(f"Gönderi planlandı: {platform} - {scheduled_time}")
-    
-                    # Progress bar'ı güncelle
-                    self.progress_bar.setValue(i + 1)
-    
-                except Exception as e:
-                    print(f"Dosya planlama hatası: {str(e)}")
-                    QMessageBox.warning(
-                        self,
-                        "Uyarı",
-                        f"'{os.path.basename(file_path)}' dosyası planlanırken hata oluştu: {str(e)}"
-                    )
-    
-            # İşlem tamamlandıktan sonra
-            self.progress_bar.setVisible(False)
-            self.load_scheduled_posts()  # Tabloyu güncelle
-    
-            if successful_posts > 0:
-                QMessageBox.information(
-                    self,
-                    "Başarılı",
-                    f"{successful_posts} gönderi başarıyla planlandı!"
+                scheduled_time = start_datetime + (interval * i)
+                file_path = self.files_list.item(i).text()
+
+                title = self.title_template.text().replace("{n}", str(i+1))
+                description = self.description_template.toPlainText().replace(
+                    "{n}", str(i+1)
                 )
-                self.clear_form()  # Formu temizle
-    
+
+                platform = "YouTube" if self.youtube_radio.isChecked() else \
+                          "Instagram Reels" if self.instagram_reels_radio.isChecked() else \
+                          "Instagram Story" if self.instagram_story_radio.isChecked() else \
+                          "Instagram"
+
+                privacy_status = self.privacy_status.currentText()
+                made_for_kids = self.made_for_kids.currentText()
+                category = self.youtube_categories[self.category.currentText()]
+                tags = self.tags.text()
+
+                if self.save_post_to_db(
+                    platform, file_path, scheduled_time, title, description, privacy_status, made_for_kids, category, tags
+                ):
+                    print(f"Gönderi planlandı: {platform} - {scheduled_time}")
+
+            self.load_scheduled_posts()
+            QMessageBox.information(
+                self,
+                "Başarılı",
+                f"{self.files_list.count()} gönderi planlandı!"
+            )
+
+            self.clear_form()
+
         except Exception as e:
-            self.progress_bar.setVisible(False)
             print(f"Planlama hatası: {str(e)}")
             QMessageBox.critical(
                 self,
@@ -955,41 +942,37 @@ class PostSchedulerUI(QMainWindow):
 
     def upload_instagram_post(self, file_path, caption, is_reels=False, is_story=False):
         try:
-            # Veritabanından kullanıcı adı ve şifreyi al
-            insta_username, insta_password = self.get_instagram_credentials()
-
-            if not insta_username or not insta_password:
-                raise Exception("Instagram kullanıcı adı ve şifre boş olamaz!")
-
             if not self.instagram_client:
                 self.instagram_client = Client()
+                username, password = self.load_instagram_credentials()
+                if not username or not password:
+                    raise Exception("Instagram kullanıcı adı ve şifre boş olamaz!")
                 try:
-                    self.instagram_client.login(
-                        insta_username,
-                        insta_password
-                    )
+                    self.instagram_client.login(username, password)
                 except Exception as login_error:
                     raise Exception(f"Instagram login failed: {str(login_error)}")
-
+    
             print(f"Instagram'a yükleniyor: {os.path.basename(file_path)}")
-
+    
+            # Create a copy of the file in a temporary directory
             temp_dir = os.path.join(os.path.dirname(file_path), 'temp_uploads')
             os.makedirs(temp_dir, exist_ok=True)
             temp_file = os.path.join(temp_dir, os.path.basename(file_path))
-
+    
             try:
                 import shutil
                 shutil.copy2(file_path, temp_file)
-
+    
                 if is_story:
+                    # Handle story upload
                     if temp_file.lower().endswith('.mp4'):
-                        media = self.instagram_client.video_upload_to_story(temp_file)
+                        media = self.instagram_client.video_upload(temp_file, caption=caption)
                     else:
-                        media = self.instagram_client.photo_upload_to_story(temp_file)
+                        media = self.instagram_client.photo_upload(temp_file, caption=caption)
                 elif is_reels:
                     if not temp_file.lower().endswith('.mp4'):
                         raise Exception("Reels için sadece MP4 formatı desteklenir!")
-
+    
                     media = self.instagram_client.clip_upload(
                         path=temp_file,
                         caption=caption
@@ -1005,14 +988,16 @@ class PostSchedulerUI(QMainWindow):
                             path=temp_file,
                             caption=caption
                         )
-
+    
                 print(f"Instagram'a yükleme başarılı: {os.path.basename(file_path)}")
                 return True, media.pk
-
+    
             finally:
+                # Ensure the file is closed before attempting to delete
                 if 'media' in locals():
-                    del media
-
+                    del media  # Delete the media object to release any file handles
+    
+                # Clean up temporary files
                 try:
                     if os.path.exists(temp_file):
                         os.remove(temp_file)
@@ -1020,7 +1005,7 @@ class PostSchedulerUI(QMainWindow):
                         os.rmdir(temp_dir)
                 except Exception as cleanup_error:
                     print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
-
+    
         except Exception as e:
             print(f"Instagram yükleme hatası: {str(e)}")
             return False, str(e)
