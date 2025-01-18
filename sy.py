@@ -45,7 +45,7 @@ class PostSchedulerUI(QMainWindow):
         
         # Zamanlayıcıyı başlat
         self.start_scheduler()
-
+        self.init_database()
     def create_ui_components(self):
         # Üst kısım - Gönderi ekleme alanı
         top_group = QGroupBox("Yeni Gönderi Planla")
@@ -235,7 +235,7 @@ class PostSchedulerUI(QMainWindow):
                 try:
                     # Hata durumunda yedek tabloyu geri yükle
                     if has_backup:
-                        c.execute('DROP TABLE IF NOT EXISTS scheduled_posts')
+                        c.execute('DROP TABLE IF EXISTS scheduled_posts')
                         c.execute('ALTER TABLE scheduled_posts_backup RENAME TO scheduled_posts')
                     conn.commit()
                 except:
@@ -509,7 +509,10 @@ class PostSchedulerUI(QMainWindow):
             creds = None
             
             if os.path.exists('youtube_token.json'):
-                creds = Credentials.from_authorized_user_file('youtube_token.json', SCOPES)
+                os.remove('youtube_token.json')  # Delete existing token file to force re-authentication
+                
+            if os.path.exists('youtube_token.json'):
+                creds = Credentials.from_authorized_user_file('youtube_token.json',creds, SCOPES)
                 
             if not creds or not creds.valid:
                 if creds and creds.expired and creds.refresh_token:
@@ -544,19 +547,15 @@ class PostSchedulerUI(QMainWindow):
             response = request.execute()
 
             categories = response.get('items', [])
-            return {category['snippet']['title']: category['id'] for category in categories}
+            for category in categories:
+                print(f"Category ID: {category['id']}, Title: {category['snippet']['title']}")
         
         except Exception as e:
             print(f"YouTube kategorileri alınırken hata oluştu: {str(e)}")
-            return {}
-
-    def get_youtube_categories(self):
-        categories = self.fetch_youtube_categories()
-        self.category.addItems(categories.keys())
-        return categories
-
     def validate_video_for_reels(self, file_path):
         try:
+            from moviepy.editor import VideoFileClip
+
             if not os.path.exists(file_path):
                 raise Exception("Video dosyası bulunamadı")
 
@@ -612,38 +611,32 @@ class PostSchedulerUI(QMainWindow):
         except Exception as e:
             raise Exception(f"Video önişleme hatası: {str(e)}")
 
+
     def upload_instagram_post(self, file_path, caption, is_reels=False, is_story=False):
         try:
-            # Check username and password before creating client
-            username = self.insta_username.text().strip()
-            password = self.insta_password.text().strip()
-            
-            if not username or not password:
-                raise Exception("Instagram login failed: Both username and password must be provided.")
-                
-            # Create new client if not exists or recreate if login failed
             if not self.instagram_client:
                 self.instagram_client = Client()
                 try:
-                    self.instagram_client.login(username, password)
-                    print(f"Instagram login successful for user: {username}")
+                    self.instagram_client.login(
+                        self.insta_username.text(),
+                        self.insta_password.text()
+                    )
                 except Exception as login_error:
-                    self.instagram_client = None  # Reset client on login failure
                     raise Exception(f"Instagram login failed: {str(login_error)}")
-    
+
             print(f"Instagram'a yükleniyor: {os.path.basename(file_path)}")
-    
+
             # Create a copy of the file in a temporary directory
-            temp_dir = os.path.join(tempfile.gettempdir(), 'instagram_uploads')
+            temp_dir = os.path.join(os.path.dirname(file_path), 'temp_uploads')
             os.makedirs(temp_dir, exist_ok=True)
             temp_file = os.path.join(temp_dir, os.path.basename(file_path))
-    
+
             try:
-                # Copy file to temp directory
+                import shutil
                 shutil.copy2(file_path, temp_file)
-    
-                # Upload based on type
+
                 if is_story:
+                    # Handle story upload
                     if temp_file.lower().endswith('.mp4'):
                         media = self.instagram_client.video_story_upload(temp_file)
                     else:
@@ -651,6 +644,7 @@ class PostSchedulerUI(QMainWindow):
                 elif is_reels:
                     if not temp_file.lower().endswith('.mp4'):
                         raise Exception("Reels için sadece MP4 formatı desteklenir!")
+
                     media = self.instagram_client.clip_upload(
                         path=temp_file,
                         caption=caption
@@ -666,31 +660,29 @@ class PostSchedulerUI(QMainWindow):
                             path=temp_file,
                             caption=caption
                         )
-    
+
                 print(f"Instagram'a yükleme başarılı: {os.path.basename(file_path)}")
                 return True, media.pk
-    
+
             finally:
-                # Ensure media object is released
+                # Ensure the file is closed before attempting to delete
                 if 'media' in locals():
-                    del media
-    
+                    del media  # Delete the media object to release any file handles
+
                 # Clean up temporary files
                 try:
                     if os.path.exists(temp_file):
-                        # Force close any open handles
-                        import gc
-                        gc.collect()
-                        os.close(os.open(temp_file, os.O_RDONLY))
                         os.remove(temp_file)
                     if os.path.exists(temp_dir) and not os.listdir(temp_dir):
                         os.rmdir(temp_dir)
                 except Exception as cleanup_error:
                     print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
-    
+
         except Exception as e:
             print(f"Instagram yükleme hatası: {str(e)}")
             return False, str(e)
+
+# Example check_scheduled_posts method call to ensure correct parameters
     def check_scheduled_posts(self):
         try:
             conn = sqlite3.connect('scheduler.db')
@@ -789,13 +781,35 @@ class PostSchedulerUI(QMainWindow):
 
             conn.close()
 
+            # Tabloyu güncelle
+
         except Exception as e:
             print(f"Zamanlayıcı hatası: {str(e)}")
+
 
     def start_scheduler(self):
         self.timer = QTimer()
         self.timer.timeout.connect(self.check_scheduled_posts)
         self.timer.start(60000)  # Her dakika kontrol et
+
+    def get_youtube_categories(self):
+        try:
+            if not self.youtube_credentials:
+                if not self.authenticate_youtube():
+                    raise Exception("YouTube kimlik doğrulaması başarısız!")
+                    
+            youtube = build('youtube', 'v3', credentials=self.youtube_credentials)
+            request = youtube.videoCategories().list(part="snippet", regionCode="TR")
+            response = request.execute()
+            
+            categories = {item["snippet"]["title"]: item["id"] for item in response["items"]}
+            self.category.addItems(categories.keys())
+            return categories
+            
+        except Exception as e:
+            print(f"YouTube kategorileri alınırken hata oluştu: {str(e)}")
+            QMessageBox.warning(self, "Hata", "YouTube kategorileri alınırken hata oluştu!")
+            return {}
 
 def main():
     app = QApplication(sys.argv)
