@@ -301,7 +301,7 @@ class PostSchedulerUI(QMainWindow):
         """
         if not self.validate_inputs():
             return
-            
+
         # Instagram kimlik bilgilerini kontrol et
         if (self.instagram_radio.isChecked() or 
             self.instagram_reels_radio.isChecked() or 
@@ -309,7 +309,7 @@ class PostSchedulerUI(QMainWindow):
             if not self.insta_username.text().strip() or not self.insta_password.text().strip():
                 QMessageBox.warning(self, "Hata", "Instagram kullanıcı adı ve şifre gerekli!")
                 return
-                
+
         try:
             start_date = self.start_date.date().toPyDate()
             start_time = self.start_time.time().toPyTime()
@@ -321,46 +321,46 @@ class PostSchedulerUI(QMainWindow):
                 start_time.minute,
                 start_time.second
             )
-            
+
             interval = timedelta(
                 hours=self.interval_hours.value(),
                 minutes=self.interval_minutes.value()
             )
-            
+
             for i in range(self.files_list.count()):
                 scheduled_time = start_datetime + (interval * i)
                 file_path = self.files_list.item(i).text()
-                
+
                 title = self.title_template.text().replace("{n}", str(i+1))
                 description = self.description_template.toPlainText().replace(
                     "{n}", str(i+1)
                 )
-                
+
                 platform = "YouTube" if self.youtube_radio.isChecked() else \
                           "Instagram Reels" if self.instagram_reels_radio.isChecked() else \
                           "Instagram Story" if self.instagram_story_radio.isChecked() else \
                           "Instagram"
-    
+
                 privacy_status = self.privacy_status.currentText()
                 made_for_kids = self.made_for_kids.currentText()
                 category = self.youtube_categories[self.category.currentText()]
                 tags = self.tags.text()
-                
+
                 if self.save_post_to_db(
                     platform, file_path, scheduled_time, title, description, 
                     privacy_status, made_for_kids, category, tags
                 ):
                     print(f"Gönderi planlandı: {platform} - {scheduled_time}")
-                
+
             self.load_scheduled_posts()
             QMessageBox.information(
                 self,
                 "Başarılı",
                 f"{self.files_list.count()} gönderi planlandı!"
             )
-            
+
             self.clear_form()
-            
+
         except Exception as e:
             print(f"Planlama hatası: {str(e)}")
             QMessageBox.critical(
@@ -667,118 +667,130 @@ class PostSchedulerUI(QMainWindow):
     def upload_instagram_post(self, file_path, caption, is_reels=False, is_story=False):
         """
         Instagram gönderilerini yüklemek için kullanılan metot.
-        
-        Args:
-            file_path (str): Yüklenecek dosyanın yolu
-            caption (str): Gönderi açıklaması
-            is_reels (bool): Reels gönderisi mi?
-            is_story (bool): Story gönderisi mi?
-        
-        Returns:
-            tuple: (başarı_durumu, sonuç_mesajı)
         """
         try:
-            # Kimlik bilgilerini kontrol et
-            username = self.insta_username.text().strip()
-            password = self.insta_password.text().strip()
-    
-            if not username or not password:
-                raise Exception("Instagram kullanıcı adı ve şifre gerekli")
-    
-            # Instagram client'ı başlat
-            if not self.instagram_client:
-                self.instagram_client = Client()
-                session_file = 'instagram_session.json'
-                
-                try:
-                    if os.path.exists(session_file):
-                        self.instagram_client.load_settings(session_file)
-                        try:
-                            self.instagram_client.get_timeline_feed()
-                        except:
-                            self.instagram_client.login(username, password)
-                            self.instagram_client.dump_settings(session_file)
-                    else:
-                        self.instagram_client.login(username, password)
-                        self.instagram_client.dump_settings(session_file)
-                except Exception as login_error:
-                    raise Exception(f"Instagram girişi başarısız: {str(login_error)}")
-    
-            # Geçici dizin oluştur
-            temp_dir = tempfile.mkdtemp()
-            temp_uploads_dir = os.path.join(temp_dir, 'temp_uploads')
-            os.makedirs(temp_uploads_dir, exist_ok=True)
-    
-            # Güvenli dosya adı oluştur
-            safe_filename = "".join(c for c in os.path.basename(file_path) if c.isalnum() or c in ('_', '.', '-'))
-            temp_file = os.path.join(temp_uploads_dir, safe_filename)
-    
+            # Instagram oturumunu başlat
+            if not self.ensure_instagram_login():
+                raise Exception("Instagram oturumu başlatılamadı")
+
+            # Dosya işleme
+            if is_reels or (is_story and file_path.lower().endswith('.mp4')):
+                processed_file = self.preprocess_video_for_reels(file_path)
+                upload_file = processed_file
+            else:
+                upload_file = file_path
+
             try:
-                # Dosyayı geçici konuma kopyala
-                shutil.copy2(file_path, temp_file)
-    
-                # Yükleme türüne göre işlem yap
+                # Yükleme işlemi
                 if is_story:
-                    if temp_file.lower().endswith(('.mp4', '.mov')):
-                        media = self.instagram_client.video_story_upload(temp_file)
+                    if upload_file.lower().endswith(('.mp4', '.mov')):
+                        media = self.instagram_client.video_story_upload(
+                            path=upload_file
+                        )
                     else:
-                        media = self.instagram_client.photo_story_upload(temp_file)
+                        media = self.instagram_client.photo_story_upload(
+                            path=upload_file
+                        )
                 elif is_reels:
-                    if not temp_file.lower().endswith(('.mp4', '.mov')):
+                    if not upload_file.lower().endswith(('.mp4', '.mov')):
                         raise Exception("Reels için sadece video formatı desteklenir!")
-                        
+
+                    # Reels özel yapılandırması
                     media = self.instagram_client.clip_upload(
-                        path=temp_file,
+                        path=upload_file,
                         caption=caption,
                         extra_data={
                             "custom_accessibility_caption": caption,
                             "like_and_view_counts_disabled": 0,
-                            "disable_comments": 0
+                            "disable_comments": 0,
+                            "is_unified_video": 1,
+                            "check_alignment": True,
+                            "rename_video": False
                         }
                     )
                 else:
-                    if temp_file.lower().endswith(('.mp4', '.mov')):
+                    if upload_file.lower().endswith(('.mp4', '.mov')):
                         media = self.instagram_client.video_upload(
-                            path=temp_file,
+                            path=upload_file,
                             caption=caption
                         )
                     else:
                         media = self.instagram_client.photo_upload(
-                            path=temp_file,
+                            path=upload_file,
                             caption=caption
                         )
-    
+
                 return True, media.pk
-    
+
             finally:
-                # Geçici dosyaları temizle
-                try:
-                    if os.path.exists(temp_file):
-                        os.chmod(temp_file, 0o777)
-                        os.remove(temp_file)
-                    if os.path.exists(temp_uploads_dir):
-                        shutil.rmtree(temp_uploads_dir, ignore_errors=True)
-                    if os.path.exists(temp_dir):
-                        shutil.rmtree(temp_dir, ignore_errors=True)
-                except Exception as cleanup_error:
-                    print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
-    
+                # İşlenmiş geçici dosyayı temizle
+                if 'processed_file' in locals() and processed_file and os.path.exists(processed_file):
+                    try:
+                        os.remove(processed_file)
+                    except Exception as cleanup_error:
+                        print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
+
         except Exception as e:
             print(f"Instagram yükleme hatası: {str(e)}")
             return False, str(e)
-    
+        
+
+    def ensure_instagram_login(self):
+        """
+        Instagram oturumunun aktif olduğundan emin ol
+        """
+        try:
+            if not self.instagram_client:
+                self.instagram_client = Client()
+
+            username = self.insta_username.text().strip()
+            password = self.insta_password.text().strip()
+
+            if not username or not password:
+                raise Exception("Instagram kullanıcı adı ve şifre gerekli")
+
+            session_file = 'instagram_session.json'
+
+            # Mevcut oturumu kontrol et
+            if os.path.exists(session_file):
+                try:
+                    self.instagram_client.load_settings(session_file)
+                    # Oturum geçerliliğini kontrol et
+                    self.instagram_client.get_timeline_feed()
+                    print("Mevcut Instagram oturumu kullanılıyor")
+                    return True
+                except Exception as session_error:
+                    print(f"Oturum hatası: {str(session_error)}")
+                    # Oturum geçersizse yeni oturum aç
+                    os.remove(session_file)
+
+            # Yeni oturum aç
+            print("Yeni Instagram oturumu açılıyor...")
+            self.instagram_client.login(username, password)
+
+            # Oturumu kaydet
+            self.instagram_client.dump_settings(session_file)
+            print("Instagram oturumu başarıyla kaydedildi")
+
+            return True
+
+        except Exception as e:
+            print(f"Instagram login hatası: {str(e)}")
+            return False
 # Example check_scheduled_posts method call to ensure correct parameters
     def check_scheduled_posts(self):
+        """
+        Zamanlanmış gönderileri kontrol et ve yükle
+        """
         try:
             conn = sqlite3.connect('scheduler.db')
             c = conn.cursor()
-
             current_time = datetime.now()
 
             # Bekleyen gönderileri getir
             posts = c.execute('''
                 SELECT id, platform, file_path, scheduled_time, status, 
-                       title, description, privacy_status, made_for_kids, category, tags
+                       title, description
                 FROM scheduled_posts 
                 WHERE status = 'Bekliyor' 
                 AND datetime(scheduled_time) <= datetime(?)
@@ -786,87 +798,46 @@ class PostSchedulerUI(QMainWindow):
             ''', (current_time.isoformat(),)).fetchall()
 
             for post in posts:
-                post_id, platform, file_path, scheduled_time, status, title, description, privacy_status, made_for_kids, category, tags = post
+                post_id, platform, file_path, scheduled_time, status, title, description = post
 
-                # Dosyanın varlığını kontrol et
                 if not os.path.exists(file_path):
-                    error_status = f"Hata: Dosya bulunamadı - {file_path}"
-                    c.execute('UPDATE scheduled_posts SET status = ? WHERE id = ?', 
-                            (error_status, post_id))
+                    self.update_post_status(c, post_id, "Hata: Dosya bulunamadı")
                     continue
-                
+
                 try:
                     success = False
                     result = ""
-                    processed_file = None
 
-                    # Platform bazlı yükleme işlemleri
-                    if platform == "YouTube":
-                        success, result = self.upload_youtube_video(
-                            file_path, title, description, privacy_status, made_for_kids, category, tags
-                        )
-                    else:
+                    if "Instagram" in platform:
                         is_reels = (platform == "Instagram Reels")
                         is_story = (platform == "Instagram Story")
 
-                        # Video işleme gerekiyorsa
-                        if is_reels or (is_story and file_path.lower().endswith('.mp4')):
-                            try:
-                                processed_file = self.preprocess_video_for_reels(file_path)
-                                upload_file = processed_file
-                            except Exception as process_error:
-                                raise Exception(f"Video işleme hatası: {str(process_error)}")
-                        else:
-                            upload_file = file_path
+                        # Instagram oturumunu kontrol et
+                        if not self.ensure_instagram_login():
+                            raise Exception("Instagram oturumu başlatılamadı")
 
-                        try:
-                            # Instagram yükleme işlemi
-                            success, result = self.upload_instagram_post(
-                                upload_file, 
-                                f"{title}\n\n{description}" if title or description else "",
-                                is_reels=is_reels,
-                                is_story=is_story
-                            )
-                        finally:
-                            # İşlenmiş geçici dosyayı temizle
-                            if processed_file and os.path.exists(processed_file):
-                                try:
-                                    os.remove(processed_file)
-                                except Exception as cleanup_error:
-                                    print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
+                        # Gönderiyi yükle
+                        success, result = self.upload_instagram_post(
+                            file_path,
+                            f"{title}\n\n{description}" if title or description else "",
+                            is_reels=is_reels,
+                            is_story=is_story
+                        )
 
                     # Durumu güncelle
-                    new_status = "Yüklendi" if success else f"Hata: {result}"
-                    upload_time = datetime.now().isoformat()
-
-                    c.execute('''
-                        UPDATE scheduled_posts 
-                        SET status = ?,
-                            upload_time = ?
-                        WHERE id = ?
-                    ''', (new_status, upload_time, post_id))
-
-                    # Başarılı yükleme logunu kaydet
                     if success:
-                        print(f"Başarılı yükleme: {platform} - {os.path.basename(file_path)} - {upload_time}")
+                        self.update_post_status(c, post_id, "Yüklendi")
+                    else:
+                        self.update_post_status(c, post_id, f"Hata: {result}")
 
                 except Exception as e:
-                    error_status = f"Hata: {str(e)}"
-                    c.execute('''
-                        UPDATE scheduled_posts 
-                        SET status = ?,
-                            error_message = ?,
-                            last_attempt = ?
-                        WHERE id = ?
-                    ''', (error_status, str(e), datetime.now().isoformat(), post_id))
-                    print(f"Gönderi yükleme hatası ({platform}): {str(e)}")
+                    print(f"Gönderi yükleme hatası: {str(e)}")
+                    self.update_post_status(c, post_id, f"Hata: {str(e)}")
 
-                # Her işlemden sonra değişiklikleri kaydet
                 conn.commit()
 
             conn.close()
-
-            # Tabloyu güncelle
+            self.load_scheduled_posts()  # Tabloyu güncelle
 
         except Exception as e:
             print(f"Zamanlayıcı hatası: {str(e)}")
@@ -876,7 +847,20 @@ class PostSchedulerUI(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.check_scheduled_posts)
         self.timer.start(60000)  # Her dakika kontrol et
-
+    def update_post_status(self, cursor, post_id, status):
+        """
+        Gönderi durumunu güncelle
+        """
+        try:
+            cursor.execute('''
+                UPDATE scheduled_posts 
+                SET status = ?,
+                    upload_time = ?,
+                    last_attempt = ?
+                WHERE id = ?
+            ''', (status, datetime.now().isoformat(), datetime.now().isoformat(), post_id))
+        except Exception as e:
+            print(f"Durum güncelleme hatası: {str(e)}")
     def get_youtube_categories(self):
         try:
             if not self.youtube_credentials:
