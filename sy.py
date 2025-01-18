@@ -21,7 +21,14 @@ class PostSchedulerUI(QMainWindow):
         super().__init__()
         self.setWindowTitle("Sosyal Medya Gönderi Planlayıcı")
         self.setGeometry(100, 100, 1200, 800)
-        
+        temp_dirs = ['temp_uploads', 'processed_videos']
+        for dir_name in temp_dirs:
+            temp_dir = os.path.join(tempfile.gettempdir(), dir_name)
+            if os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                except:
+                    pass    
         # Ana widget
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -585,17 +592,41 @@ class PostSchedulerUI(QMainWindow):
             return False, str(e)
 
     def preprocess_video_for_reels(self, file_path):
+        temp_dir = None
+        clip = None
         try:
             temp_dir = tempfile.mkdtemp()
             output_path = os.path.join(temp_dir, "processed_" + os.path.basename(file_path))
-
+    
             clip = VideoFileClip(file_path)
-
-            if clip.size[0]/clip.size[1] != 9/16:
-                target_width = min(1080, clip.size[0])
-                target_height = int(target_width * 16/9)
-                clip = clip.resize((target_width, target_height))
-
+    
+            # Video boyutlarını kontrol et ve ayarla
+            width, height = clip.size
+            target_width = width
+            target_height = height
+    
+            if width/height != 9/16:  # 9:16 oranı için
+                if width > height:  # Yatay video
+                    target_width = int(height * 9/16)
+                    # Videoyu ortala
+                    x1 = (width - target_width) // 2
+                    clip = clip.crop(x1=x1, y1=0, x2=x1+target_width, y2=height)
+                else:  # Dikey video ama 9:16 değil
+                    target_height = int(width * 16/9)
+                    if target_height > height:  # Yükseklik yetersizse genişliği ayarla
+                        target_width = int(height * 9/16)
+                        x1 = (width - target_width) // 2
+                        clip = clip.crop(x1=x1, y1=0, x2=x1+target_width, y2=height)
+                    else:  # Yükseklik fazlaysa yüksekliği kırp
+                        y1 = (height - target_height) // 2
+                        clip = clip.crop(x1=0, y1=y1, x2=width, y2=y1+target_height)
+    
+            # Reels için önerilen boyutlar
+            final_width = min(1080, target_width)
+            final_height = int(final_width * 16/9)
+            clip = clip.resize((final_width, final_height))
+    
+            # Video kaydet
             clip.write_videofile(
                 output_path,
                 codec='libx264',
@@ -604,39 +635,59 @@ class PostSchedulerUI(QMainWindow):
                 remove_temp=True,
                 fps=30
             )
-
-            clip.close()
+    
             return output_path
-
+    
         except Exception as e:
-            raise Exception(f"Video önişleme hatası: {str(e)}")
-
-
+            raise Exception(f"Video işleme hatası: {str(e)}")
+        finally:
+            if clip is not None:
+                clip.close()
+                del clip
     def upload_instagram_post(self, file_path, caption, is_reels=False, is_story=False):
         try:
+            # Instagram client kontrolü ve login
             if not self.instagram_client:
                 self.instagram_client = Client()
+                username = self.insta_username.text().strip()
+                password = self.insta_password.text().strip()
+
+                if not username or not password:
+                    raise Exception("Instagram kullanıcı adı ve şifre gerekli")
+
                 try:
-                    self.instagram_client.login(
-                        self.insta_username.text(),
-                        self.insta_password.text()
-                    )
+                    # Önce session dosyasını kontrol et
+                    session_file = 'instagram_session.json'
+                    if os.path.exists(session_file):
+                        self.instagram_client.load_settings(session_file)
+                        try:
+                            self.instagram_client.get_timeline_feed()
+                        except:
+                            # Session geçersizse yeniden login ol
+                            self.instagram_client.login(username, password)
+                            self.instagram_client.dump_settings(session_file)
+                    else:
+                        # İlk login
+                        self.instagram_client.login(username, password)
+                        self.instagram_client.dump_settings(session_file)
                 except Exception as login_error:
-                    raise Exception(f"Instagram login failed: {str(login_error)}")
+                    raise Exception(f"Instagram girişi başarısız: {str(login_error)}")
 
-            print(f"Instagram'a yükleniyor: {os.path.basename(file_path)}")
+            # Geçici dizin oluşturma
+            temp_dir = tempfile.mkdtemp()
+            temp_uploads_dir = os.path.join(temp_dir, 'temp_uploads')
+            os.makedirs(temp_uploads_dir, exist_ok=True)
 
-            # Create a copy of the file in a temporary directory
-            temp_dir = os.path.join(os.path.dirname(file_path), 'temp_uploads')
-            os.makedirs(temp_dir, exist_ok=True)
-            temp_file = os.path.join(temp_dir, os.path.basename(file_path))
+            # Dosya adını güvenli hale getir
+            safe_filename = "".join(c for c in os.path.basename(file_path) if c.isalnum() or c in ('_', '.', '-'))
+            temp_file = os.path.join(temp_uploads_dir, safe_filename)
 
             try:
-                import shutil
+                # Dosyayı geçici konuma kopyala
                 shutil.copy2(file_path, temp_file)
 
+                # Yükleme işlemi
                 if is_story:
-                    # Handle story upload
                     if temp_file.lower().endswith('.mp4'):
                         media = self.instagram_client.video_story_upload(temp_file)
                     else:
@@ -645,9 +696,15 @@ class PostSchedulerUI(QMainWindow):
                     if not temp_file.lower().endswith('.mp4'):
                         raise Exception("Reels için sadece MP4 formatı desteklenir!")
 
+                    # Reels için özel yapılandırma
                     media = self.instagram_client.clip_upload(
                         path=temp_file,
-                        caption=caption
+                        caption=caption,
+                        extra_data={
+                            "custom_accessibility_caption": caption,
+                            "like_and_view_counts_disabled": 0,
+                            "disable_comments": 0
+                        }
                     )
                 else:
                     if temp_file.lower().endswith('.mp4'):
@@ -661,27 +718,24 @@ class PostSchedulerUI(QMainWindow):
                             caption=caption
                         )
 
-                print(f"Instagram'a yükleme başarılı: {os.path.basename(file_path)}")
                 return True, media.pk
 
             finally:
-                # Ensure the file is closed before attempting to delete
-                if 'media' in locals():
-                    del media  # Delete the media object to release any file handles
-
-                # Clean up temporary files
                 try:
+                    # Geçici dosyaları temizle
                     if os.path.exists(temp_file):
+                        os.chmod(temp_file, 0o777)  # Dosya izinlerini değiştir
                         os.remove(temp_file)
-                    if os.path.exists(temp_dir) and not os.listdir(temp_dir):
-                        os.rmdir(temp_dir)
+                    if os.path.exists(temp_uploads_dir):
+                        shutil.rmtree(temp_uploads_dir, ignore_errors=True)
+                    if os.path.exists(temp_dir):
+                        shutil.rmtree(temp_dir, ignore_errors=True)
                 except Exception as cleanup_error:
                     print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
 
         except Exception as e:
             print(f"Instagram yükleme hatası: {str(e)}")
             return False, str(e)
-
 # Example check_scheduled_posts method call to ensure correct parameters
     def check_scheduled_posts(self):
         try:
