@@ -580,52 +580,88 @@ class PostSchedulerUI(QMainWindow):
         except Exception as e:
             print(f"YouTube kategorileri alınırken hata oluştu: {str(e)}")
     def validate_video_for_reels(self, file_path):
+        """
+        Video dosyasının Reels/Story için uygun olup olmadığını kontrol et
+        Args:
+            file_path (str): Video dosyasının yolu
+        Returns:
+            tuple: (geçerli mi (bool), hata mesajı (str))
+        """
         try:
-            from moviepy.editor import VideoFileClip
-
             if not os.path.exists(file_path):
-                raise Exception("Video dosyası bulunamadı")
+                return False, "Video dosyası bulunamadı"
 
             clip = VideoFileClip(file_path)
 
-            max_duration = 90  # saniye
-            min_duration = 3   # saniye
-            allowed_aspect_ratios = [(9, 16), (4, 5)]
-            max_size = 500 * 1024 * 1024  # 500MB
+            try:
+                # Süre kontrolü
+                max_duration = 90  # saniye
+                min_duration = 3   # saniye
+                if clip.duration > max_duration:
+                    return False, f"Video süresi {max_duration} saniyeden az olmalıdır"
+                if clip.duration < min_duration:
+                    return False, f"Video süresi en az {min_duration} saniye olmalıdır"
 
-            if clip.duration > max_duration:
-                raise Exception(f"Video süresi {max_duration} saniyeden az olmalıdır")
-            if clip.duration < min_duration:
-                raise Exception(f"Video süresi en az {min_duration} saniye olmalıdır")
+                # Boyut oranı kontrolü
+                width, height = clip.size
+                aspect_ratio = width / height
+                allowed_ratios = {
+                    "9:16": 9/16,  # Dikey
+                    "4:5": 4/5     # Kare
+                }
 
-            video_ratio = (clip.size[0], clip.size[1])
-            if not any(abs(video_ratio[0]/video_ratio[1] - ratio[0]/ratio[1]) < 0.01 for ratio in allowed_aspect_ratios):
-                raise Exception("Video 9:16 (dikey) veya 4:5 (kare) oranında olmalıdır")
+                ratio_valid = False
+                for ratio_name, target_ratio in allowed_ratios.items():
+                    if abs(aspect_ratio - target_ratio) < 0.01:
+                        ratio_valid = True
+                        break
 
-            if os.path.getsize(file_path) > max_size:
-                raise Exception("Video dosya boyutu 500MB'dan küçük olmalıdır")
+                if not ratio_valid:
+                    return False, "Video 9:16 (dikey) veya 4:5 (kare) oranında olmalıdır"
 
-            clip.close()
-            return True, None
+                # Dosya boyutu kontrolü
+                file_size = os.path.getsize(file_path)
+                max_size = 500 * 1024 * 1024  # 500MB
+                if file_size > max_size:
+                    return False, "Video dosya boyutu 500MB'dan küçük olmalıdır"
+
+                # Codec ve format kontrolü
+                if not file_path.lower().endswith(('.mp4', '.mov')):
+                    return False, "Video formatı MP4 veya MOV olmalıdır"
+
+                return True, None
+
+            finally:
+                clip.close()
 
         except Exception as e:
-            return False, str(e)
-
+            return False, f"Video doğrulama hatası: {str(e)}"
     def preprocess_video_for_reels(self, file_path):
+        """
+        Video dosyasını Reels/Story formatına uygun hale getir
+        Args:
+            file_path (str): İşlenecek video dosyasının yolu
+        Returns:
+            str: İşlenmiş video dosyasının yolu
+        """
         temp_dir = None
         clip = None
         try:
-            temp_dir = tempfile.mkdtemp()
-            output_path = os.path.join(temp_dir, "processed_" + os.path.basename(file_path))
-    
+            # Geçici dizin oluştur
+            temp_dir = os.path.join(tempfile.gettempdir(), 'processed_videos')
+            os.makedirs(temp_dir, exist_ok=True)
+            output_path = os.path.join(temp_dir, f"processed_{int(time.time())}_{os.path.basename(file_path)}")
+
+            # Video dosyasını yükle
             clip = VideoFileClip(file_path)
-    
+
             # Video boyutlarını kontrol et ve ayarla
             width, height = clip.size
             target_width = width
             target_height = height
-    
-            if width/height != 9/16:  # 9:16 oranı için
+
+            # 9:16 oranı için ayarla
+            if width/height != 9/16:
                 if width > height:  # Yatay video
                     target_width = int(height * 9/16)
                     # Videoyu ortala
@@ -640,50 +676,73 @@ class PostSchedulerUI(QMainWindow):
                     else:  # Yükseklik fazlaysa yüksekliği kırp
                         y1 = (height - target_height) // 2
                         clip = clip.crop(x1=0, y1=y1, x2=width, y2=y1+target_height)
-    
+
             # Reels için önerilen boyutlar
             final_width = min(1080, target_width)
             final_height = int(final_width * 16/9)
             clip = clip.resize((final_width, final_height))
-    
-            # Video kaydet
+
+            # Video kalitesi ayarları
             clip.write_videofile(
                 output_path,
                 codec='libx264',
                 audio_codec='aac',
                 temp_audiofile='temp-audio.m4a',
                 remove_temp=True,
-                fps=30
+                fps=30,
+                bitrate="4000k",
+                threads=2,
+                preset='medium'
             )
-    
+
             return output_path
-    
+
         except Exception as e:
             raise Exception(f"Video işleme hatası: {str(e)}")
+
         finally:
             if clip is not None:
                 clip.close()
-                del clip
     def upload_instagram_post(self, file_path, caption, is_reels=False, is_story=False):
         """
-        Instagram gönderilerini yüklemek için kullanılan metot.
+        Instagram'a gönderi yükle
+        Args:
+            file_path (str): Yüklenecek dosyanın yolu
+            caption (str): Gönderi açıklaması
+            is_reels (bool): Reels gönderisi mi?
+            is_story (bool): Story gönderisi mi?
+        Returns:
+            tuple: (başarılı mı (bool), sonuç mesajı (str))
         """
+        temp_file = None
         try:
-            # Instagram oturumunu başlat
-            if not self.ensure_instagram_login():
-                raise Exception("Instagram oturumu başlatılamadı")
+            if not os.path.exists(file_path):
+                raise Exception("Dosya bulunamadı")
 
-            # Dosya işleme
-            if is_reels or (is_story and file_path.lower().endswith('.mp4')):
-                processed_file = self.preprocess_video_for_reels(file_path)
-                upload_file = processed_file
+            # Dosya tipini kontrol et
+            is_video = file_path.lower().endswith(('.mp4', '.mov'))
+            is_image = file_path.lower().endswith(('.jpg', '.jpeg', '.png'))
+
+            if not (is_video or is_image):
+                raise Exception("Desteklenmeyen dosya formatı")
+
+            # Reels/Story için video kontrolü
+            if (is_reels or is_story) and is_video:
+                # Video doğrulama
+                valid, error_message = self.validate_video_for_reels(file_path)
+                if not valid:
+                    raise Exception(f"Video uygun değil: {error_message}")
+
+                # Video işleme
+                temp_file = self.preprocess_video_for_reels(file_path)
+                upload_file = temp_file
             else:
                 upload_file = file_path
 
             try:
                 # Yükleme işlemi
                 if is_story:
-                    if upload_file.lower().endswith(('.mp4', '.mov')):
+                    if is_video:
                         media = self.instagram_client.video_story_upload(
                             path=upload_file
                         )
@@ -691,11 +750,12 @@ class PostSchedulerUI(QMainWindow):
                         media = self.instagram_client.photo_story_upload(
                             path=upload_file
                         )
-                elif is_reels:
-                    if not upload_file.lower().endswith(('.mp4', '.mov')):
-                        raise Exception("Reels için sadece video formatı desteklenir!")
+                    return True, media.pk
 
-                    # Reels özel yapılandırması
+                elif is_reels:
+                    if not is_video:
+                        raise Exception("Reels için sadece video formatı desteklenir")
+
                     media = self.instagram_client.clip_upload(
                         path=upload_file,
                         caption=caption,
@@ -708,8 +768,10 @@ class PostSchedulerUI(QMainWindow):
                             "rename_video": False
                         }
                     )
-                else:
-                    if upload_file.lower().endswith(('.mp4', '.mov')):
+                    return True, media.pk
+
+                else:  # Normal post
+                    if is_video:
                         media = self.instagram_client.video_upload(
                             path=upload_file,
                             caption=caption
@@ -719,25 +781,28 @@ class PostSchedulerUI(QMainWindow):
                             path=upload_file,
                             caption=caption
                         )
+                    return True, media.pk
 
-                return True, media.pk
-
-            finally:
-                # İşlenmiş geçici dosyayı temizle
-                if 'processed_file' in locals() and processed_file and os.path.exists(processed_file):
-                    try:
-                        os.remove(processed_file)
-                    except Exception as cleanup_error:
-                        print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
+            except Exception as upload_error:
+                raise Exception(f"Yükleme hatası: {str(upload_error)}")
 
         except Exception as e:
             print(f"Instagram yükleme hatası: {str(e)}")
             return False, str(e)
-        
+
+        finally:
+            # Geçici dosyaları temizle
+            if temp_file and os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception as cleanup_error:
+                    print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
 
     def ensure_instagram_login(self):
         """
-        Instagram oturumunun aktif olduğundan emin ol
+        Instagram oturumunun aktif olduğundan emin ol ve gerekirse yeniden oturum aç
+        Returns:
+            bool: Oturum başarılı ise True, değilse False
         """
         try:
             if not self.instagram_client:
@@ -750,32 +815,67 @@ class PostSchedulerUI(QMainWindow):
                 raise Exception("Instagram kullanıcı adı ve şifre gerekli")
 
             session_file = 'instagram_session.json'
+            settings_file = 'instagram_settings.json'
 
             # Mevcut oturumu kontrol et
-            if os.path.exists(session_file):
+            if os.path.exists(session_file) and os.path.exists(settings_file):
                 try:
-                    self.instagram_client.load_settings(session_file)
+                    self.instagram_client.load_settings(settings_file)
+                    self.instagram_client.set_settings({
+                        'cookies': json.loads(open(session_file).read())
+                    })
+
                     # Oturum geçerliliğini kontrol et
                     self.instagram_client.get_timeline_feed()
                     print("Mevcut Instagram oturumu kullanılıyor")
                     return True
                 except Exception as session_error:
                     print(f"Oturum hatası: {str(session_error)}")
-                    # Oturum geçersizse yeni oturum aç
-                    os.remove(session_file)
+                    # Oturum geçersizse dosyaları temizle
+                    for file in [session_file, settings_file]:
+                        if os.path.exists(file):
+                            os.remove(file)
 
-            # Yeni oturum aç
-            print("Yeni Instagram oturumu açılıyor...")
-            self.instagram_client.login(username, password)
+            # 2FA kontrolü
+            try:
+                print("Yeni Instagram oturumu açılıyor...")
+                login_response = self.instagram_client.login(username, password)
 
-            # Oturumu kaydet
-            self.instagram_client.dump_settings(session_file)
-            print("Instagram oturumu başarıyla kaydedildi")
+                if login_response.get('two_factor_required', False):
+                    verification_code, ok = QInputDialog.getText(
+                        self, 
+                        '2FA Doğrulama', 
+                        'İki faktörlü doğrulama kodunu girin:'
+                    )
+                    if ok and verification_code:
+                        self.instagram_client.two_factor_login(verification_code)
+                    else:
+                        raise Exception("2FA doğrulama iptal edildi")
 
-            return True
+                # Oturum bilgilerini kaydet
+                with open(session_file, 'w') as f:
+                    json.dump(self.instagram_client.get_settings()['cookies'], f)
+                self.instagram_client.dump_settings(settings_file)
+
+                print("Instagram oturumu başarıyla kaydedildi")
+                return True
+
+            except Exception as login_error:
+                print(f"Login error: {str(login_error)}")
+                QMessageBox.warning(
+                    self,
+                    "Instagram Giriş Hatası",
+                    f"Oturum açılamadı: {str(login_error)}"
+                )
+                return False
 
         except Exception as e:
             print(f"Instagram login hatası: {str(e)}")
+            QMessageBox.warning(
+                self,
+                "Hata",
+                f"Instagram oturumu başlatılamadı: {str(e)}"
+            )
             return False
 # Example check_scheduled_posts method call to ensure correct parameters
     def check_scheduled_posts(self):
@@ -847,20 +947,49 @@ class PostSchedulerUI(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.check_scheduled_posts)
         self.timer.start(60000)  # Her dakika kontrol et
-    def update_post_status(self, cursor, post_id, status):
+    def update_post_status(self, cursor, post_id, status, result_data=None):
         """
-        Gönderi durumunu güncelle
+        Gönderi durumunu güncelle ve sonuçları kaydet
+        Args:
+            cursor: Veritabanı cursor'ı
+            post_id: Gönderi ID'si
+            status: Yeni durum
+            result_data: Sonuç verileri (opsiyonel)
         """
         try:
-            cursor.execute('''
+            current_time = datetime.now().isoformat()
+            
+            if result_data is None:
+                result_data = {}
+                
+            update_query = '''
                 UPDATE scheduled_posts 
                 SET status = ?,
                     upload_time = ?,
-                    last_attempt = ?
+                    last_attempt = ?,
+                    error_message = ?
                 WHERE id = ?
-            ''', (status, datetime.now().isoformat(), datetime.now().isoformat(), post_id))
+            '''
+            
+            error_message = result_data.get('error', '') if isinstance(result_data, dict) else str(result_data)
+            
+            cursor.execute(
+                update_query,
+                (status, 
+                 current_time if "Yüklendi" in status else None,
+                 current_time,
+                 error_message,
+                 post_id)
+            )
+            
+            # Log kayıtları
+            print(f"Gönderi durumu güncellendi - ID: {post_id}, Durum: {status}")
+            if error_message:
+                print(f"Hata mesajı: {error_message}")
+                
         except Exception as e:
             print(f"Durum güncelleme hatası: {str(e)}")
+            raise
     def get_youtube_categories(self):
         try:
             if not self.youtube_credentials:
