@@ -19,6 +19,7 @@ import shutil
 class PostSchedulerUI(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.instagram_client = None
         self.setWindowTitle("Sosyal Medya Gönderi Planlayıcı")
         self.setGeometry(100, 100, 1200, 800)
         
@@ -27,6 +28,7 @@ class PostSchedulerUI(QMainWindow):
         self.setCentralWidget(central_widget)
         self.layout = QVBoxLayout(central_widget)
         
+
         # UI bileşenlerini oluştur
         self.create_ui_components()
         
@@ -47,10 +49,15 @@ class PostSchedulerUI(QMainWindow):
         self.start_scheduler()
         self.init_database()
     def create_ui_components(self):
+        # Ana widget ve layout
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        self.layout = QVBoxLayout(central_widget)
+
         # Üst kısım - Gönderi ekleme alanı
         top_group = QGroupBox("Yeni Gönderi Planla")
         top_layout = QVBoxLayout()
-        
+
         # Platform seçimi
         platform_layout = QHBoxLayout()
         self.youtube_radio = QRadioButton("YouTube")
@@ -62,7 +69,7 @@ class PostSchedulerUI(QMainWindow):
         platform_layout.addWidget(self.instagram_reels_radio)
         platform_layout.addWidget(self.instagram_story_radio)
         top_layout.addLayout(platform_layout)
-        
+
         # Dosya seçimi
         file_layout = QHBoxLayout()
         self.files_list = QListWidget()
@@ -75,7 +82,7 @@ class PostSchedulerUI(QMainWindow):
         file_layout.addWidget(self.files_list)
         file_layout.addLayout(file_buttons_layout)
         top_layout.addLayout(file_layout)
-        
+
         # Zamanlama ayarları
         schedule_layout = QGridLayout()
         self.start_date = QDateEdit(calendarPopup=True)
@@ -86,7 +93,7 @@ class PostSchedulerUI(QMainWindow):
         schedule_layout.addWidget(self.start_date, 0, 1)
         schedule_layout.addWidget(QLabel("Saat:"), 0, 2)
         schedule_layout.addWidget(self.start_time, 0, 3)
-        
+
         # Gönderi aralığı
         self.interval_hours = QSpinBox()
         self.interval_hours.setRange(0, 24)
@@ -97,9 +104,9 @@ class PostSchedulerUI(QMainWindow):
         schedule_layout.addWidget(QLabel("saat"), 1, 2)
         schedule_layout.addWidget(self.interval_minutes, 1, 3)
         schedule_layout.addWidget(QLabel("dakika"), 1, 4)
-        
+
         top_layout.addLayout(schedule_layout)
-        
+
         # Başlık ve açıklama şablonu
         template_layout = QFormLayout()
         self.title_template = QLineEdit()
@@ -108,19 +115,32 @@ class PostSchedulerUI(QMainWindow):
         template_layout.addRow("Başlık Şablonu:", self.title_template)
         template_layout.addRow("Açıklama Şablonu:", self.description_template)
         top_layout.addLayout(template_layout)
-        
+
         # Instagram hesap bilgileri
         self.instagram_credentials = QGroupBox("Instagram Hesap Bilgileri")
         instagram_form = QFormLayout()
+
+        # Username field with placeholder
         self.insta_username = QLineEdit()
+        self.insta_username.setPlaceholderText("Instagram kullanıcı adınız")
+
+        # Password field with placeholder and password mode
         self.insta_password = QLineEdit()
+        self.insta_password.setPlaceholderText("Instagram şifreniz")
         self.insta_password.setEchoMode(QLineEdit.Password)
+
+        # Test connection button
+        self.test_instagram_btn = QPushButton("Bağlantıyı Test Et")
+        self.test_instagram_btn.clicked.connect(self.test_instagram_connection)
+
         instagram_form.addRow("Kullanıcı Adı:", self.insta_username)
         instagram_form.addRow("Şifre:", self.insta_password)
+        instagram_form.addRow(self.test_instagram_btn)
+
         self.instagram_credentials.setLayout(instagram_form)
         self.instagram_credentials.hide()
         top_layout.addWidget(self.instagram_credentials)
-        
+
         # YouTube Ayarları
         self.youtube_settings = QGroupBox("YouTube Ayarları")
         youtube_settings_layout = QFormLayout()
@@ -145,34 +165,120 @@ class PostSchedulerUI(QMainWindow):
 
         self.youtube_settings.setLayout(youtube_settings_layout)
         top_layout.addWidget(self.youtube_settings)
-        
+
+        # Status Label
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        top_layout.addWidget(self.status_label)
+
+        # Progress Bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        top_layout.addWidget(self.progress_bar)
+
         # Planlama butonu
         self.schedule_button = QPushButton("Gönderileri Planla")
         self.schedule_button.setMinimumHeight(40)
+        self.schedule_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+        """)
         top_layout.addWidget(self.schedule_button)
-        
+
         top_group.setLayout(top_layout)
         self.layout.addWidget(top_group)
-        
+
         # Alt kısım - Planlanan gönderiler tablosu
         bottom_group = QGroupBox("Planlanan Gönderiler")
         bottom_layout = QVBoxLayout()
-        
+
+        # Tablo filtresi
+        filter_layout = QHBoxLayout()
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Gönderi ara...")
+        self.filter_input.textChanged.connect(self.filter_posts)
+        filter_layout.addWidget(self.filter_input)
+
+        # Durum filtresi
+        self.status_filter = QComboBox()
+        self.status_filter.addItems(["Tümü", "Bekliyor", "Yüklendi", "Hata"])
+        self.status_filter.currentTextChanged.connect(self.filter_posts)
+        filter_layout.addWidget(self.status_filter)
+
+        bottom_layout.addLayout(filter_layout)
+
+        # Tablo
         self.posts_table = QTableWidget()
         self.setup_table()
         bottom_layout.addWidget(self.posts_table)
-        
+
+        # Tablo kontrol butonları
+        table_buttons_layout = QHBoxLayout()
+        refresh_btn = QPushButton("Tabloyu Yenile")
+        refresh_btn.clicked.connect(self.load_scheduled_posts)
+        delete_selected_btn = QPushButton("Seçili Gönderiyi Sil")
+        delete_selected_btn.clicked.connect(self.delete_selected_post)
+        table_buttons_layout.addWidget(refresh_btn)
+        table_buttons_layout.addWidget(delete_selected_btn)
+        bottom_layout.addLayout(table_buttons_layout)
+
         bottom_group.setLayout(bottom_layout)
         self.layout.addWidget(bottom_group)
-        
+
         # Sinyalleri bağla
         add_file_btn.clicked.connect(self.add_files)
         remove_file_btn.clicked.connect(self.remove_selected_file)
         self.schedule_button.clicked.connect(self.schedule_posts)
-        self.youtube_radio.toggled.connect(self.toggle_instagram_credentials)
-        self.instagram_radio.toggled.connect(self.toggle_instagram_credentials)
-        self.instagram_reels_radio.toggled.connect(self.toggle_instagram_credentials)
-        self.instagram_story_radio.toggled.connect(self.toggle_instagram_credentials)
+        self.youtube_radio.toggled.connect(self.toggle_settings)
+        self.instagram_radio.toggled.connect(self.toggle_settings)
+        self.instagram_reels_radio.toggled.connect(self.toggle_settings)
+        self.instagram_story_radio.toggled.connect(self.toggle_settings)
+
+    def toggle_settings(self):
+        # YouTube ayarlarını göster/gizle
+        self.youtube_settings.setVisible(self.youtube_radio.isChecked())
+
+        # Instagram kimlik bilgilerini göster/gizle
+        is_instagram = (self.instagram_radio.isChecked() or 
+                       self.instagram_reels_radio.isChecked() or 
+                       self.instagram_story_radio.isChecked())
+        self.instagram_credentials.setVisible(is_instagram)
+
+    def filter_posts(self):
+        search_text = self.filter_input.text().lower()
+        status_filter = self.status_filter.currentText()
+
+        for row in range(self.posts_table.rowCount()):
+            show_row = True
+
+            # Metin araması
+            if search_text:
+                row_text = ""
+                for col in range(self.posts_table.columnCount()):
+                    item = self.posts_table.item(row, col)
+                    if item:
+                        row_text += item.text().lower() + " "
+                if search_text not in row_text:
+                    show_row = False
+
+            # Durum filtresi
+            if status_filter != "Tümü":
+                status_item = self.posts_table.item(row, 3)  # Durum sütunu
+                if status_item and status_item.text() != status_filter:
+                    show_row = False
+
+            self.posts_table.setRowHidden(row, not show_row)        
 
     def init_database(self):
         try:
@@ -247,24 +353,46 @@ class PostSchedulerUI(QMainWindow):
             sys.exit(1)
 
     def setup_table(self):
+        """
+        Tabloyu yapılandır ve sütunları ayarla
+        """
         self.posts_table.setColumnCount(10)
-        self.posts_table.setHorizontalHeaderLabels([
-            "Platform", "Dosya", "Tarih/Saat", "Durum", "Başlık", "Açıklama", "Gizlilik", "Çocuklar için mi?", "Kategori", "Etiketler"
-        ])
-        
+        headers = [
+            "Platform",
+            "Dosya",
+            "Tarih/Saat",
+            "Durum",
+            "Başlık",
+            "Açıklama",
+            "Gizlilik",
+            "Çocuklar için mi?",
+            "Kategori",
+            "Etiketler"
+        ]
+        self.posts_table.setHorizontalHeaderLabels(headers)
+
+        # Sütun genişliklerini ayarla
         header = self.posts_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.Stretch)
-        header.setSectionResizeMode(5, QHeaderView.Stretch)
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(9, QHeaderView.Stretch)
-        
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # Platform
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Dosya
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Tarih/Saat
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)  # Durum
+        header.setSectionResizeMode(4, QHeaderView.Stretch)          # Başlık
+        header.setSectionResizeMode(5, QHeaderView.Stretch)          # Açıklama
+        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # Gizlilik
+        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # Çocuklar için mi
+        header.setSectionResizeMode(8, QHeaderView.ResizeToContents)  # Kategori
+        header.setSectionResizeMode(9, QHeaderView.Stretch)          # Etiketler
+
+        # Alternatif satır renkleri
         self.posts_table.setAlternatingRowColors(True)
+
+        # Satır seçimi ayarları
+        self.posts_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.posts_table.setSelectionMode(QTableWidget.SingleSelection)
+
+        # Sütunları sıralanabilir yap
+        self.posts_table.setSortingEnabled(True)
 
     def add_files(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -289,67 +417,94 @@ class PostSchedulerUI(QMainWindow):
         )
 
     def schedule_posts(self):
+        """
+        Seçili dosyaları planlama
+        """
         if not self.validate_inputs():
             return
-            
+
         try:
+            # Başlangıç zamanını al
             start_date = self.start_date.date().toPyDate()
             start_time = self.start_time.time().toPyTime()
-            start_datetime = datetime(
-                start_date.year,
-                start_date.month,
-                start_date.day,
-                start_time.hour,
-                start_time.minute,
-                start_time.second
-            )
-            
+            start_datetime = datetime.combine(start_date, start_time)
+
+            # Gönderi aralığını hesapla
             interval = timedelta(
                 hours=self.interval_hours.value(),
                 minutes=self.interval_minutes.value()
             )
-            
-            for i in range(self.files_list.count()):
-                scheduled_time = start_datetime + (interval * i)
-                file_path = self.files_list.item(i).text()
-                
-                title = self.title_template.text().replace("{n}", str(i+1))
-                description = self.description_template.toPlainText().replace(
-                    "{n}", str(i+1)
-                )
-                
-                platform = "YouTube" if self.youtube_radio.isChecked() else \
-                          "Instagram Reels" if self.instagram_reels_radio.isChecked() else \
-                          "Instagram Story" if self.instagram_story_radio.isChecked() else \
-                          "Instagram"
 
-                privacy_status = self.privacy_status.currentText()
-                made_for_kids = self.made_for_kids.currentText()
-                category = self.youtube_categories[self.category.currentText()]
-                tags = self.tags.text()
-                
-                if self.save_post_to_db(
-                    platform, file_path, scheduled_time, title, description, privacy_status, made_for_kids, category, tags
-                ):
-                    print(f"Gönderi planlandı: {platform} - {scheduled_time}")
-                
-            self.load_scheduled_posts()
-            QMessageBox.information(
-                self,
-                "Başarılı",
-                f"{self.files_list.count()} gönderi planlandı!"
-            )
-            
-            self.clear_form()
-            
+            # Progress bar'ı ayarla
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setMaximum(self.files_list.count())
+            self.progress_bar.setValue(0)
+
+            successful_posts = 0
+
+            # Her dosya için planlama yap
+            for i in range(self.files_list.count()):
+                try:
+                    scheduled_time = start_datetime + (interval * i)
+                    file_path = self.files_list.item(i).text()
+
+                    # Başlık ve açıklamayı hazırla
+                    title = self.title_template.text().replace("{n}", str(i+1))
+                    description = self.description_template.toPlainText().replace("{n}", str(i+1))
+
+                    # Platform bilgisini al
+                    platform = "YouTube" if self.youtube_radio.isChecked() else \
+                              "Instagram Reels" if self.instagram_reels_radio.isChecked() else \
+                              "Instagram Story" if self.instagram_story_radio.isChecked() else \
+                              "Instagram"
+
+                    # YouTube için ek ayarları al
+                    privacy_status = self.privacy_status.currentText() if platform == "YouTube" else "private"
+                    made_for_kids = self.made_for_kids.currentText() if platform == "YouTube" else "Hayır"
+                    category = self.category.currentText() if platform == "YouTube" else ""
+                    tags = self.tags.text() if platform == "YouTube" else ""
+
+                    # Gönderiyi kaydet
+                    success, post_id = self.save_post_to_db(
+                        platform, file_path, scheduled_time, title, description,
+                        privacy_status, made_for_kids, category, tags
+                    )
+
+                    if success:
+                        successful_posts += 1
+                        print(f"Gönderi planlandı: {platform} - {scheduled_time}")
+
+                    # Progress bar'ı güncelle
+                    self.progress_bar.setValue(i + 1)
+
+                except Exception as e:
+                    print(f"Dosya planlama hatası: {str(e)}")
+                    QMessageBox.warning(
+                        self,
+                        "Uyarı",
+                        f"'{os.path.basename(file_path)}' dosyası planlanırken hata oluştu: {str(e)}"
+                    )
+
+            # İşlem tamamlandıktan sonra
+            self.progress_bar.setVisible(False)
+            self.load_scheduled_posts()  # Tabloyu güncelle
+
+            if successful_posts > 0:
+                QMessageBox.information(
+                    self,
+                    "Başarılı",
+                    f"{successful_posts} gönderi başarıyla planlandı!"
+                )
+                self.clear_form()  # Formu temizle
+
         except Exception as e:
+            self.progress_bar.setVisible(False)
             print(f"Planlama hatası: {str(e)}")
             QMessageBox.critical(
                 self,
                 "Hata",
                 f"Gönderiler planlanırken bir hata oluştu: {str(e)}"
             )
-
     def validate_inputs(self):
         if self.files_list.count() == 0:
             QMessageBox.warning(self, "Hata", "Lütfen en az bir dosya seçin!")
@@ -403,53 +558,187 @@ class PostSchedulerUI(QMainWindow):
         self.tags.clear()
 
     def load_scheduled_posts(self):
+        """
+        Veritabanından planlanan gönderileri yükle ve tabloya ekle
+        """
         try:
             conn = sqlite3.connect('scheduler.db')
             c = conn.cursor()
             
+            # Tüm gönderileri getir
             posts = c.execute('''
                 SELECT id, platform, file_path, scheduled_time, status, 
-                       title, description, privacy_status, made_for_kids, category, tags
+                       title, description, privacy_status, made_for_kids, 
+                       category, tags
                 FROM scheduled_posts 
-                ORDER BY scheduled_time
+                ORDER BY scheduled_time DESC
             ''').fetchall()
             
-            self.posts_table.setRowCount(len(posts))
-            for i, post in enumerate(posts):
-                self.posts_table.setItem(i, 0, QTableWidgetItem(str(post[1])))  # Platform
-                self.posts_table.setItem(i, 1, QTableWidgetItem(os.path.basename(str(post[2]))))  # Dosya
-                self.posts_table.setItem(i, 2, QTableWidgetItem(str(post[3])))  # Tarih/Saat
-                self.posts_table.setItem(i, 3, QTableWidgetItem(str(post[4])))  # Durum
-                self.posts_table.setItem(i, 4, QTableWidgetItem(str(post[5] or "")))  # Başlık
-                self.posts_table.setItem(i, 5, QTableWidgetItem(str(post[6] or "")))  # Açıklama
-                self.posts_table.setItem(i, 6, QTableWidgetItem(str(post[7])))  # Gizlilik
-                self.posts_table.setItem(i, 7, QTableWidgetItem(str(post[8])))  # Çocuklar için mi?
-                self.posts_table.setItem(i, 8, QTableWidgetItem(str(post[9] or "")))  # Kategori
-                self.posts_table.setItem(i, 9, QTableWidgetItem(str(post[10] or "")))  # Etiketler
+            # Tabloyu temizle
+            self.posts_table.setRowCount(0)
+            
+            # Gönderileri tabloya ekle
+            for post in posts:
+                row_position = self.posts_table.rowCount()
+                self.posts_table.insertRow(row_position)
+                
+                # ID'yi gizli veri olarak sakla
+                platform_item = QTableWidgetItem(post[1])
+                platform_item.setData(Qt.UserRole, post[0])
+                
+                # Sütunları doldur
+                self.posts_table.setItem(row_position, 0, platform_item)
+                self.posts_table.setItem(row_position, 1, QTableWidgetItem(os.path.basename(post[2])))
+                self.posts_table.setItem(row_position, 2, QTableWidgetItem(post[3]))
+                self.posts_table.setItem(row_position, 3, QTableWidgetItem(post[4]))
+                self.posts_table.setItem(row_position, 4, QTableWidgetItem(post[5] or ""))
+                self.posts_table.setItem(row_position, 5, QTableWidgetItem(post[6] or ""))
+                self.posts_table.setItem(row_position, 6, QTableWidgetItem(post[7] or ""))
+                self.posts_table.setItem(row_position, 7, QTableWidgetItem(post[8] or ""))
+                self.posts_table.setItem(row_position, 8, QTableWidgetItem(post[9] or ""))
+                self.posts_table.setItem(row_position, 9, QTableWidgetItem(post[10] or ""))
+                
+                # Durum hücresinin rengini ayarla
+                status_item = self.posts_table.item(row_position, 3)
+                if status_item:
+                    if post[4] == "Yüklendi":
+                        status_item.setBackground(QColor("#4CAF50"))  # Yeşil
+                        status_item.setForeground(QColor("white"))
+                    elif post[4].startswith("Hata"):
+                        status_item.setBackground(QColor("#f44336"))  # Kırmızı
+                        status_item.setForeground(QColor("white"))
+                    elif post[4] == "Bekliyor":
+                        status_item.setBackground(QColor("#2196F3"))  # Mavi
+                        status_item.setForeground(QColor("white"))
             
             conn.close()
+            
         except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Hata",
+                f"Gönderiler yüklenirken bir hata oluştu: {str(e)}"
+            )
             print(f"Veritabanı okuma hatası: {str(e)}")
-            QMessageBox.warning(self, "Hata", "Planlanan gönderiler yüklenirken bir hata oluştu!")
+    def delete_selected_post(self):
+        """
+        Seçili gönderiyi veritabanından ve tablodan siler
+        """
+        try:
+            # Seçili satırı al
+            current_row = self.posts_table.currentRow()
+            if current_row < 0:
+                QMessageBox.warning(self, "Uyarı", "Lütfen silinecek bir gönderi seçin!")
+                return
 
+            # Onay al
+            reply = QMessageBox.question(
+                self,
+                'Gönderi Silme',
+                'Seçili gönderiyi silmek istediğinizden emin misiniz?',
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+
+            if reply == QMessageBox.Yes:
+                try:
+                    conn = sqlite3.connect('scheduler.db')
+                    c = conn.cursor()
+
+                    # Gönderi ID'sini al (varsayılan olarak gizli bir sütunda sakladığımızı varsayalım)
+                    post_id = self.posts_table.item(current_row, 0).data(Qt.UserRole)
+
+                    # Veritabanından sil
+                    c.execute('DELETE FROM scheduled_posts WHERE id = ?', (post_id,))
+                    conn.commit()
+
+                    # Tablodan satırı kaldır
+                    self.posts_table.removeRow(current_row)
+
+                    # Başarı mesajı göster
+                    self.status_label.setText("Gönderi başarıyla silindi!")
+                    self.status_label.setStyleSheet("color: #4CAF50;")
+
+                    # 3 saniye sonra status label'ı temizle
+                    QTimer.singleShot(3000, lambda: self.status_label.setText(""))
+
+                except Exception as e:
+                    QMessageBox.critical(
+                        self,
+                        "Hata",
+                        f"Gönderi silinirken bir hata oluştu: {str(e)}"
+                    )
+                    print(f"Silme hatası: {str(e)}")
+
+                finally:
+                    if 'conn' in locals():
+                        conn.close()
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Hata",
+                f"Beklenmeyen bir hata oluştu: {str(e)}"
+            )
+            print(f"Beklenmeyen hata: {str(e)}")
     def save_post_to_db(self, platform, file_path, scheduled_time, title='', description='', privacy_status='private', made_for_kids='Hayır', category='', tags=''):
+        """
+        Yeni gönderiyi veritabanına kaydetme
+        """
         try:
             conn = sqlite3.connect('scheduler.db')
             c = conn.cursor()
-            
-            c.execute('''INSERT INTO scheduled_posts 
-                        (platform, file_path, scheduled_time, status, title, description, privacy_status, made_for_kids, category, tags)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                     (platform, file_path, scheduled_time.isoformat(), 
-                      "Bekliyor", title, description, privacy_status, made_for_kids, category, tags))
-            
+
+            # Gönderiyi veritabanına ekle
+            c.execute('''
+                INSERT INTO scheduled_posts 
+                (platform, file_path, scheduled_time, status, title, description, 
+                 privacy_status, made_for_kids, category, tags, upload_time, error_message, last_attempt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL)
+            ''', (
+                platform,
+                file_path,
+                scheduled_time.isoformat(),
+                "Bekliyor",
+                title,
+                description,
+                privacy_status,
+                made_for_kids,
+                category,
+                tags
+            ))
+
+            # Değişiklikleri kaydet
             conn.commit()
+
+            # Son eklenen ID'yi al
+            last_id = c.lastrowid
+
             conn.close()
-            return True
+
+            # Status label'ı güncelle
+            self.status_label.setText(f"Gönderi başarıyla planlandı: {platform} - {scheduled_time}")
+            self.status_label.setStyleSheet("color: #4CAF50;")
+
+            # 3 saniye sonra status label'ı temizle
+            QTimer.singleShot(3000, lambda: self.status_label.setText(""))
+
+            return True, last_id
+
         except Exception as e:
-            print(f"Veritabanı kayıt hatası: {str(e)}")
-            QMessageBox.warning(self, "Hata", "Gönderi kaydedilirken bir hata oluştu!")
-            return False
+            error_msg = f"Veritabanı kayıt hatası: {str(e)}"
+            print(error_msg)
+
+            # Hata durumunda kullanıcıya bilgi ver
+            self.status_label.setText(f"Hata: {error_msg}")
+            self.status_label.setStyleSheet("color: #f44336;")
+
+            # 5 saniye sonra status label'ı temizle
+            QTimer.singleShot(5000, lambda: self.status_label.setText(""))
+
+            if 'conn' in locals():
+                conn.close()
+            return False, None
 
     def upload_youtube_video(self, file_path, title, description, privacy_status, made_for_kids, category, tags):
         try:
@@ -613,45 +902,135 @@ class PostSchedulerUI(QMainWindow):
 
 
     def upload_instagram_post(self, file_path, caption, is_reels=False, is_story=False):
-        if not self.initialize_instagram_client():
-            return False, "Instagram oturumu başlatılamadı"
-    
         try:
+            # Debug için bilgileri yazdır
+            print("Instagram yükleme başlatılıyor...")
+            print(f"Kullanıcı adı uzunluğu: {len(self.insta_username.text().strip())}")
+            print(f"Şifre uzunluğu: {len(self.insta_password.text().strip())}")
+
+            # Kimlik bilgilerini kontrol et
+            username = self.insta_username.text().strip()
+            password = self.insta_password.text().strip()
+
+            if not username or not password:
+                raise Exception("Instagram kullanıcı adı ve şifre boş olamaz!")
+
+            # Instagram client'ı başlat
+            if not hasattr(self, 'instagram_client') or self.instagram_client is None:
+                self.instagram_client = Client()
+                print("Yeni Instagram client oluşturuldu")
+
+                # Session dosyası kontrolü
+                session_file = f"{username}_session.json"
+                try:
+                    if os.path.exists(session_file):
+                        print("Mevcut oturum bulundu, yükleniyor...")
+                        self.instagram_client.load_settings(session_file)
+                        # Oturum geçerliliğini kontrol et
+                        try:
+                            self.instagram_client.get_timeline_feed()
+                            print("Mevcut oturum geçerli")
+                        except Exception:
+                            print("Mevcut oturum geçersiz, yeniden giriş yapılıyor...")
+                            os.remove(session_file)
+                            self.instagram_client = Client()
+
+                    # Login işlemi
+                    print("Instagram'a giriş yapılıyor...")
+                    self.instagram_client.login(username, password)
+                    print("Giriş başarılı!")
+
+                    # Yeni oturumu kaydet
+                    self.instagram_client.dump_settings(session_file)
+                    print("Oturum kaydedildi")
+
+                except Exception as login_error:
+                    print(f"Login hatası: {str(login_error)}")
+                    raise Exception(f"Instagram giriş hatası: {str(login_error)}")
+
             print(f"Instagram'a yükleniyor: {os.path.basename(file_path)}")
-    
+
+            # Geçici dosya işlemleri
             temp_dir = os.path.join(os.path.dirname(file_path), 'temp_uploads')
             os.makedirs(temp_dir, exist_ok=True)
             temp_file = os.path.join(temp_dir, os.path.basename(file_path))
-    
+
             try:
+                # Dosyayı geçici konuma kopyala
                 shutil.copy2(file_path, temp_file)
-    
+                print(f"Dosya geçici konuma kopyalandı: {temp_file}")
+
+                # Upload işlemi
                 if is_story:
-                    media = self.instagram_client.video_story_upload(temp_file) if temp_file.lower().endswith('.mp4') else self.instagram_client.photo_story_upload(temp_file)
+                    print("Story yükleme işlemi başlatılıyor...")
+                    if temp_file.lower().endswith(('.mp4', '.mov')):
+                        media = self.instagram_client.video_upload_to_story(path=temp_file)
+                    else:
+                        media = self.instagram_client.photo_upload_to_story(path=temp_file)
                 elif is_reels:
-                    if not temp_file.lower().endswith('.mp4'):
-                        raise Exception("Reels için sadece MP4 formatı desteklenir!")
+                    print("Reels yükleme işlemi başlatılıyor...")
                     media = self.instagram_client.clip_upload(path=temp_file, caption=caption)
                 else:
-                    media = self.instagram_client.video_upload(path=temp_file, caption=caption) if temp_file.lower().endswith('.mp4') else self.instagram_client.photo_upload(path=temp_file, caption=caption)
-    
+                    print("Normal gönderi yükleme işlemi başlatılıyor...")
+                    if temp_file.lower().endswith(('.mp4', '.mov')):
+                        media = self.instagram_client.video_upload(path=temp_file, caption=caption)
+                    else:
+                        media = self.instagram_client.photo_upload(path=temp_file, caption=caption)
+
                 print(f"Instagram'a yükleme başarılı: {os.path.basename(file_path)}")
                 return True, media.pk
-    
+
             finally:
-                if 'media' in locals():
-                    del media
+                # Temizlik işlemleri
                 try:
                     if os.path.exists(temp_file):
                         os.remove(temp_file)
+                        print("Geçici dosya silindi")
                     if os.path.exists(temp_dir) and not os.listdir(temp_dir):
                         os.rmdir(temp_dir)
+                        print("Geçici dizin silindi")
                 except Exception as cleanup_error:
-                    print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
-    
+                    print(f"Temizlik hatası: {str(cleanup_error)}")
+
         except Exception as e:
             print(f"Instagram yükleme hatası: {str(e)}")
             return False, str(e)
+    def test_instagram_connection(self):
+        """
+        Instagram bağlantısını test et
+        """
+        try:
+            username = self.insta_username.text().strip()
+            password = self.insta_password.text().strip()
+
+            if not username or not password:
+                QMessageBox.warning(self, "Hata", "Lütfen kullanıcı adı ve şifre giriniz!")
+                return
+
+            print("Instagram bağlantı testi başlatılıyor...")
+            client = Client()
+            print(f"Giriş deneniyor... (Kullanıcı: {username})")
+            client.login(username, password)
+
+            # Başarılı giriş durumunda oturumu kaydet
+            session_file = f"{username}_session.json"
+            client.dump_settings(session_file)
+            print("Oturum dosyası kaydedildi:", session_file)
+
+            QMessageBox.information(
+                self,
+                "Başarılı",
+                "Instagram bağlantısı başarıyla test edildi!"
+            )
+
+        except Exception as e:
+            print(f"Bağlantı test hatası: {str(e)}")
+            QMessageBox.critical(
+                self,
+                "Bağlantı Hatası",
+                f"Instagram bağlantı hatası: {str(e)}"
+            )
+
     def initialize_instagram_client(self):
         try:
             if not self.instagram_client:
