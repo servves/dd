@@ -296,9 +296,20 @@ class PostSchedulerUI(QMainWindow):
         )
 
     def schedule_posts(self):
+        """
+        Gönderileri planlayan metot.
+        """
         if not self.validate_inputs():
             return
             
+        # Instagram kimlik bilgilerini kontrol et
+        if (self.instagram_radio.isChecked() or 
+            self.instagram_reels_radio.isChecked() or 
+            self.instagram_story_radio.isChecked()):
+            if not self.insta_username.text().strip() or not self.insta_password.text().strip():
+                QMessageBox.warning(self, "Hata", "Instagram kullanıcı adı ve şifre gerekli!")
+                return
+                
         try:
             start_date = self.start_date.date().toPyDate()
             start_time = self.start_time.time().toPyTime()
@@ -329,14 +340,15 @@ class PostSchedulerUI(QMainWindow):
                           "Instagram Reels" if self.instagram_reels_radio.isChecked() else \
                           "Instagram Story" if self.instagram_story_radio.isChecked() else \
                           "Instagram"
-
+    
                 privacy_status = self.privacy_status.currentText()
                 made_for_kids = self.made_for_kids.currentText()
                 category = self.youtube_categories[self.category.currentText()]
                 tags = self.tags.text()
                 
                 if self.save_post_to_db(
-                    platform, file_path, scheduled_time, title, description, privacy_status, made_for_kids, category, tags
+                    platform, file_path, scheduled_time, title, description, 
+                    privacy_status, made_for_kids, category, tags
                 ):
                     print(f"Gönderi planlandı: {platform} - {scheduled_time}")
                 
@@ -356,30 +368,38 @@ class PostSchedulerUI(QMainWindow):
                 "Hata",
                 f"Gönderiler planlanırken bir hata oluştu: {str(e)}"
             )
-
     def validate_inputs(self):
+        """
+        Kullanıcı girdilerini doğrulayan metot.
+
+        Returns:
+            bool: Girdiler geçerli mi?
+        """
         if self.files_list.count() == 0:
             QMessageBox.warning(self, "Hata", "Lütfen en az bir dosya seçin!")
             return False
-            
+
         if not (self.youtube_radio.isChecked() or 
                 self.instagram_radio.isChecked() or 
                 self.instagram_reels_radio.isChecked() or
                 self.instagram_story_radio.isChecked()):
             QMessageBox.warning(self, "Hata", "Lütfen bir platform seçin!")
             return False
-            
+
+        # Instagram seçiliyse kimlik bilgilerini kontrol et
         if (self.instagram_radio.isChecked() or 
             self.instagram_reels_radio.isChecked() or
             self.instagram_story_radio.isChecked()):
-            if not self.insta_username.text() or not self.insta_password.text():
+            username = self.insta_username.text().strip()
+            password = self.insta_password.text().strip()
+            if not username or not password:
                 QMessageBox.warning(
                     self, 
                     "Hata", 
                     "Lütfen Instagram kullanıcı adı ve şifresini girin!"
                 )
                 return False
-                
+
         if self.interval_hours.value() == 0 and self.interval_minutes.value() == 0:
             QMessageBox.warning(
                 self, 
@@ -387,7 +407,7 @@ class PostSchedulerUI(QMainWindow):
                 "Lütfen gönderi aralığını belirleyin!"
             )
             return False
-            
+
         return True
 
     def clear_form(self):
@@ -645,58 +665,68 @@ class PostSchedulerUI(QMainWindow):
                 clip.close()
                 del clip
     def upload_instagram_post(self, file_path, caption, is_reels=False, is_story=False):
+        """
+        Instagram gönderilerini yüklemek için kullanılan metot.
+        
+        Args:
+            file_path (str): Yüklenecek dosyanın yolu
+            caption (str): Gönderi açıklaması
+            is_reels (bool): Reels gönderisi mi?
+            is_story (bool): Story gönderisi mi?
+        
+        Returns:
+            tuple: (başarı_durumu, sonuç_mesajı)
+        """
         try:
-            # Instagram client kontrolü ve login
+            # Kimlik bilgilerini kontrol et
+            username = self.insta_username.text().strip()
+            password = self.insta_password.text().strip()
+    
+            if not username or not password:
+                raise Exception("Instagram kullanıcı adı ve şifre gerekli")
+    
+            # Instagram client'ı başlat
             if not self.instagram_client:
                 self.instagram_client = Client()
-                username = self.insta_username.text().strip()
-                password = self.insta_password.text().strip()
-
-                if not username or not password:
-                    raise Exception("Instagram kullanıcı adı ve şifre gerekli")
-
+                session_file = 'instagram_session.json'
+                
                 try:
-                    # Önce session dosyasını kontrol et
-                    session_file = 'instagram_session.json'
                     if os.path.exists(session_file):
                         self.instagram_client.load_settings(session_file)
                         try:
                             self.instagram_client.get_timeline_feed()
                         except:
-                            # Session geçersizse yeniden login ol
                             self.instagram_client.login(username, password)
                             self.instagram_client.dump_settings(session_file)
                     else:
-                        # İlk login
                         self.instagram_client.login(username, password)
                         self.instagram_client.dump_settings(session_file)
                 except Exception as login_error:
                     raise Exception(f"Instagram girişi başarısız: {str(login_error)}")
-
-            # Geçici dizin oluşturma
+    
+            # Geçici dizin oluştur
             temp_dir = tempfile.mkdtemp()
             temp_uploads_dir = os.path.join(temp_dir, 'temp_uploads')
             os.makedirs(temp_uploads_dir, exist_ok=True)
-
-            # Dosya adını güvenli hale getir
+    
+            # Güvenli dosya adı oluştur
             safe_filename = "".join(c for c in os.path.basename(file_path) if c.isalnum() or c in ('_', '.', '-'))
             temp_file = os.path.join(temp_uploads_dir, safe_filename)
-
+    
             try:
                 # Dosyayı geçici konuma kopyala
                 shutil.copy2(file_path, temp_file)
-
-                # Yükleme işlemi
+    
+                # Yükleme türüne göre işlem yap
                 if is_story:
-                    if temp_file.lower().endswith('.mp4'):
+                    if temp_file.lower().endswith(('.mp4', '.mov')):
                         media = self.instagram_client.video_story_upload(temp_file)
                     else:
                         media = self.instagram_client.photo_story_upload(temp_file)
                 elif is_reels:
-                    if not temp_file.lower().endswith('.mp4'):
-                        raise Exception("Reels için sadece MP4 formatı desteklenir!")
-
-                    # Reels için özel yapılandırma
+                    if not temp_file.lower().endswith(('.mp4', '.mov')):
+                        raise Exception("Reels için sadece video formatı desteklenir!")
+                        
                     media = self.instagram_client.clip_upload(
                         path=temp_file,
                         caption=caption,
@@ -707,7 +737,7 @@ class PostSchedulerUI(QMainWindow):
                         }
                     )
                 else:
-                    if temp_file.lower().endswith('.mp4'):
+                    if temp_file.lower().endswith(('.mp4', '.mov')):
                         media = self.instagram_client.video_upload(
                             path=temp_file,
                             caption=caption
@@ -717,14 +747,14 @@ class PostSchedulerUI(QMainWindow):
                             path=temp_file,
                             caption=caption
                         )
-
+    
                 return True, media.pk
-
+    
             finally:
+                # Geçici dosyaları temizle
                 try:
-                    # Geçici dosyaları temizle
                     if os.path.exists(temp_file):
-                        os.chmod(temp_file, 0o777)  # Dosya izinlerini değiştir
+                        os.chmod(temp_file, 0o777)
                         os.remove(temp_file)
                     if os.path.exists(temp_uploads_dir):
                         shutil.rmtree(temp_uploads_dir, ignore_errors=True)
@@ -732,10 +762,11 @@ class PostSchedulerUI(QMainWindow):
                         shutil.rmtree(temp_dir, ignore_errors=True)
                 except Exception as cleanup_error:
                     print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
-
+    
         except Exception as e:
             print(f"Instagram yükleme hatası: {str(e)}")
             return False, str(e)
+    
 # Example check_scheduled_posts method call to ensure correct parameters
     def check_scheduled_posts(self):
         try:
