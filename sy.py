@@ -509,14 +509,14 @@ class PostSchedulerUI(QMainWindow):
         if self.files_list.count() == 0:
             QMessageBox.warning(self, "Hata", "Lütfen en az bir dosya seçin!")
             return False
-            
+
         if not (self.youtube_radio.isChecked() or 
                 self.instagram_radio.isChecked() or 
                 self.instagram_reels_radio.isChecked() or
                 self.instagram_story_radio.isChecked()):
             QMessageBox.warning(self, "Hata", "Lütfen bir platform seçin!")
             return False
-            
+
         if (self.instagram_radio.isChecked() or 
             self.instagram_reels_radio.isChecked() or
             self.instagram_story_radio.isChecked()):
@@ -527,7 +527,7 @@ class PostSchedulerUI(QMainWindow):
                     "Lütfen Instagram kullanıcı adı ve şifresini girin!"
                 )
                 return False
-                
+
         if self.interval_hours.value() == 0 and self.interval_minutes.value() == 0:
             QMessageBox.warning(
                 self, 
@@ -535,7 +535,7 @@ class PostSchedulerUI(QMainWindow):
                 "Lütfen gönderi aralığını belirleyin!"
             )
             return False
-            
+
         return True
 
     def clear_form(self):
@@ -903,95 +903,74 @@ class PostSchedulerUI(QMainWindow):
 
     def upload_instagram_post(self, file_path, caption, is_reels=False, is_story=False):
         try:
-            # Debug için bilgileri yazdır
-            print("Instagram yükleme başlatılıyor...")
-            print(f"Kullanıcı adı uzunluğu: {len(self.insta_username.text().strip())}")
-            print(f"Şifre uzunluğu: {len(self.insta_password.text().strip())}")
-
-            # Kimlik bilgilerini kontrol et
-            username = self.insta_username.text().strip()
-            password = self.insta_password.text().strip()
-
-            if not username or not password:
+            # Check if Instagram credentials are provided
+            if not self.insta_username.text() or not self.insta_password.text():
                 raise Exception("Instagram kullanıcı adı ve şifre boş olamaz!")
-
-            # Instagram client'ı başlat
-            if not hasattr(self, 'instagram_client') or self.instagram_client is None:
+    
+            if not self.instagram_client:
                 self.instagram_client = Client()
-                print("Yeni Instagram client oluşturuldu")
-
-                # Session dosyası kontrolü
-                session_file = f"{username}_session.json"
                 try:
-                    if os.path.exists(session_file):
-                        print("Mevcut oturum bulundu, yükleniyor...")
-                        self.instagram_client.load_settings(session_file)
-                        # Oturum geçerliliğini kontrol et
-                        try:
-                            self.instagram_client.get_timeline_feed()
-                            print("Mevcut oturum geçerli")
-                        except Exception:
-                            print("Mevcut oturum geçersiz, yeniden giriş yapılıyor...")
-                            os.remove(session_file)
-                            self.instagram_client = Client()
-
-                    # Login işlemi
-                    print("Instagram'a giriş yapılıyor...")
-                    self.instagram_client.login(username, password)
-                    print("Giriş başarılı!")
-
-                    # Yeni oturumu kaydet
-                    self.instagram_client.dump_settings(session_file)
-                    print("Oturum kaydedildi")
-
+                    self.instagram_client.login(
+                        self.insta_username.text(),
+                        self.insta_password.text()
+                    )
                 except Exception as login_error:
-                    print(f"Login hatası: {str(login_error)}")
-                    raise Exception(f"Instagram giriş hatası: {str(login_error)}")
-
+                    raise Exception(f"Instagram login failed: {str(login_error)}")
+    
             print(f"Instagram'a yükleniyor: {os.path.basename(file_path)}")
-
-            # Geçici dosya işlemleri
+    
+            # Create a copy of the file in a temporary directory
             temp_dir = os.path.join(os.path.dirname(file_path), 'temp_uploads')
             os.makedirs(temp_dir, exist_ok=True)
             temp_file = os.path.join(temp_dir, os.path.basename(file_path))
-
+    
             try:
-                # Dosyayı geçici konuma kopyala
+                import shutil
                 shutil.copy2(file_path, temp_file)
-                print(f"Dosya geçici konuma kopyalandı: {temp_file}")
-
-                # Upload işlemi
+    
                 if is_story:
-                    print("Story yükleme işlemi başlatılıyor...")
-                    if temp_file.lower().endswith(('.mp4', '.mov')):
-                        media = self.instagram_client.video_upload_to_story(path=temp_file)
+                    # Handle story upload
+                    if temp_file.lower().endswith('.mp4'):
+                        media = self.instagram_client.video_upload_to_story(temp_file)
                     else:
-                        media = self.instagram_client.photo_upload_to_story(path=temp_file)
+                        media = self.instagram_client.photo_upload_to_story(temp_file)
                 elif is_reels:
-                    print("Reels yükleme işlemi başlatılıyor...")
-                    media = self.instagram_client.clip_upload(path=temp_file, caption=caption)
+                    if not temp_file.lower().endswith('.mp4'):
+                        raise Exception("Reels için sadece MP4 formatı desteklenir!")
+    
+                    media = self.instagram_client.clip_upload(
+                        path=temp_file,
+                        caption=caption
+                    )
                 else:
-                    print("Normal gönderi yükleme işlemi başlatılıyor...")
-                    if temp_file.lower().endswith(('.mp4', '.mov')):
-                        media = self.instagram_client.video_upload(path=temp_file, caption=caption)
+                    if temp_file.lower().endswith('.mp4'):
+                        media = self.instagram_client.video_upload(
+                            path=temp_file,
+                            caption=caption
+                        )
                     else:
-                        media = self.instagram_client.photo_upload(path=temp_file, caption=caption)
-
+                        media = self.instagram_client.photo_upload(
+                            path=temp_file,
+                            caption=caption
+                        )
+    
                 print(f"Instagram'a yükleme başarılı: {os.path.basename(file_path)}")
                 return True, media.pk
-
+    
             finally:
-                # Temizlik işlemleri
+                # Ensure the file is closed before attempting to delete
+                if 'media' in locals():
+                    del media  # Delete the media object to release any file handles
+    
+                # Clean up temporary files
                 try:
                     if os.path.exists(temp_file):
                         os.remove(temp_file)
-                        print("Geçici dosya silindi")
                     if os.path.exists(temp_dir) and not os.listdir(temp_dir):
                         os.rmdir(temp_dir)
-                        print("Geçici dizin silindi")
                 except Exception as cleanup_error:
-                    print(f"Temizlik hatası: {str(cleanup_error)}")
-
+                    print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
+    
         except Exception as e:
             print(f"Instagram yükleme hatası: {str(e)}")
             return False, str(e)
