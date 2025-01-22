@@ -584,8 +584,8 @@ class PostSchedulerUI(QMainWindow):
         self.instagram_radio.setChecked(False)
         self.instagram_reels_radio.setChecked(False)
         self.instagram_story_radio.setChecked(False)
-        self.insta_username.clear()
-        self.insta_password.clear()
+        # self.insta_username.clear()
+        # self.insta_password.clear()
         self.start_date.setDateTime(QDateTime.currentDateTime())
         self.start_time.setTime(QTime.currentTime())
         self.interval_hours.setValue(0)
@@ -951,18 +951,18 @@ class PostSchedulerUI(QMainWindow):
                     self.instagram_client.login(username, password)
                 except Exception as login_error:
                     raise Exception(f"Instagram login failed: {str(login_error)}")
-    
+
             print(f"Instagram'a yükleniyor: {os.path.basename(file_path)}")
-    
+
             # Create a copy of the file in a temporary directory
             temp_dir = os.path.join(os.path.dirname(file_path), 'temp_uploads')
             os.makedirs(temp_dir, exist_ok=True)
             temp_file = os.path.join(temp_dir, os.path.basename(file_path))
-    
+
             try:
                 import shutil
                 shutil.copy2(file_path, temp_file)
-    
+
                 if is_story:
                     # Handle story upload
                     if temp_file.lower().endswith('.mp4'):
@@ -972,7 +972,7 @@ class PostSchedulerUI(QMainWindow):
                 elif is_reels:
                     if not temp_file.lower().endswith('.mp4'):
                         raise Exception("Reels için sadece MP4 formatı desteklenir!")
-    
+
                     media = self.instagram_client.clip_upload(
                         path=temp_file,
                         caption=caption
@@ -988,15 +988,15 @@ class PostSchedulerUI(QMainWindow):
                             path=temp_file,
                             caption=caption
                         )
-    
+
                 print(f"Instagram'a yükleme başarılı: {os.path.basename(file_path)}")
                 return True, media.pk
-    
+
             finally:
                 # Ensure the file is closed before attempting to delete
                 if 'media' in locals():
                     del media  # Delete the media object to release any file handles
-    
+
                 # Clean up temporary files
                 try:
                     if os.path.exists(temp_file):
@@ -1005,7 +1005,7 @@ class PostSchedulerUI(QMainWindow):
                         os.rmdir(temp_dir)
                 except Exception as cleanup_error:
                     print(f"Geçici dosya temizleme hatası: {str(cleanup_error)}")
-    
+
         except Exception as e:
             print(f"Instagram yükleme hatası: {str(e)}")
             return False, str(e)
